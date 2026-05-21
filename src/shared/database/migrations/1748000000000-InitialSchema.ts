@@ -120,17 +120,13 @@ export class InitialSchema1748000000000 implements MigrationInterface {
     // On This Day — match on month + day, ignoring year
     await queryRunner.query(`
       CREATE INDEX "idx_entries_anniversary"
-        ON "diary_entries"(
-          "connection_id",
-          EXTRACT(MONTH FROM "recorded_at")::INT,
-          EXTRACT(DAY   FROM "recorded_at")::INT
-        )
+        ON "diary_entries"("connection_id", "recorded_at")
         WHERE "deleted_at" IS NULL
     `);
     // Memory Tree — monthly aggregation
     await queryRunner.query(`
       CREATE INDEX "idx_entries_monthly"
-        ON "diary_entries"("connection_id", DATE_TRUNC('month', "recorded_at"))
+        ON "diary_entries"("connection_id", "recorded_at")
         WHERE "deleted_at" IS NULL
     `);
     // Full-text search on transcriptions
@@ -262,10 +258,7 @@ export class InitialSchema1748000000000 implements MigrationInterface {
     // Cron job queries this daily — match on month+day regardless of year
     await queryRunner.query(`
       CREATE INDEX "idx_occasions_upcoming"
-        ON "occasions"(
-          EXTRACT(MONTH FROM "occasion_date")::INT,
-          EXTRACT(DAY   FROM "occasion_date")::INT
-        )
+        ON "occasions"("connection_id", "occasion_date")
     `);
 
     // ─── occasion_ai_messages ─────────────────────────────────────────────────
