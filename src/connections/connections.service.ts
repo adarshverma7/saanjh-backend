@@ -439,6 +439,53 @@ export class ConnectionsService {
     }
   }
 
+  // ── Check which contacts are on Saanjh ────────────────────────────────────
+
+  /**
+   * Takes a list of E.164 phone numbers, hashes them server-side,
+   * and returns the subset that have Saanjh accounts.
+   * Phone numbers are never stored — only hashes are compared.
+   * Max 500 numbers per request to prevent abuse.
+   */
+  async checkContacts(
+    userId: string,
+    phones: string[],
+    salt: string,
+  ): Promise<{ phone: string; name: string | null }[]> {
+    if (!phones.length) return [];
+
+    // Normalise and hash each number
+    const pairs = phones
+      .slice(0, 500)
+      .map((p) => {
+        try {
+          const normalised = normalizePhone(p);
+          return { phone: p, hash: hashPhone(normalised, salt) };
+        } catch {
+          return null;
+        }
+      })
+      .filter((x): x is { phone: string; hash: string } => x !== null);
+
+    if (!pairs.length) return [];
+    const hashes = pairs.map((p) => p.hash);
+
+    // Look up which hashes exist in the users table
+    const rows = await this.db.query<{ phone_hash: string; name: string | null }[]>(
+      `SELECT phone_hash, name FROM users
+       WHERE phone_hash = ANY($1::text[])
+         AND deleted_at IS NULL
+         AND id != $2`,
+      [hashes, userId],
+    );
+
+    const found = new Map(rows.map((r) => [r.phone_hash, r.name]));
+
+    return pairs
+      .filter((p) => found.has(p.hash))
+      .map((p) => ({ phone: p.phone, name: found.get(p.hash) ?? null }));
+  }
+
   // ── List connections ───────────────────────────────────────────────────────
 
   async getConnections(userId: string): Promise<ConnectionListItem[]> {
