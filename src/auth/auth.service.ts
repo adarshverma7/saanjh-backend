@@ -584,8 +584,7 @@ export class AuthService {
          app_version  = EXCLUDED.app_version,
          fcm_token    = COALESCE(EXCLUDED.fcm_token, device_sessions.fcm_token),
          is_active    = true,
-         last_used_at = NOW(),
-         updated_at   = NOW()
+         last_used_at = NOW()
        RETURNING id`,
       [
         userId,
