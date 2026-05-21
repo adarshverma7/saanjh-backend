@@ -18,6 +18,8 @@ import { ConfigService } from '@nestjs/config';
         synchronize: false,
         logging: config.get<string>('NODE_ENV') === 'development',
         migrationsRun: false,
+        // Force IPv4 — Supabase direct connection resolves to IPv6 which Railway can't reach
+        extra: { family: 4 },
       }),
     }),
   ],
