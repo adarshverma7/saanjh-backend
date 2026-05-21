@@ -17,9 +17,8 @@ import { ConfigService } from '@nestjs/config';
         migrations: [__dirname + '/migrations/*{.ts,.js}'],
         synchronize: false,
         logging: config.get<string>('NODE_ENV') === 'development',
-        migrationsRun: false,
-        // Force IPv4 — Supabase direct connection resolves to IPv6 which Railway can't reach
-        extra: { family: 4 },
+        // Run migrations automatically on startup in production
+        migrationsRun: config.get<string>('NODE_ENV') === 'production',
       }),
     }),
   ],
