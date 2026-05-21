@@ -59,15 +59,18 @@ export class OnThisDayService {
           message: 'date must be in YYYY-MM-DD format',
         });
       }
-      const parsed = new Date(date + 'T00:00:00+05:30'); // treat as IST date
-      if (isNaN(parsed.getTime())) {
+      // Parse directly from the string to avoid timezone-shift bugs:
+      // new Date('2024-05-20T00:00:00+05:30').getDate() returns 19 on UTC hosts
+      // because JS converts to UTC first, then getDate() reads local (UTC) time.
+      const match = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!match) {
         throw new BadRequestException({
           error: 'INVALID_DATE',
           message: 'Invalid date value',
         });
       }
-      month = parsed.getMonth() + 1;
-      day = parsed.getDate();
+      month = parseInt(match[2], 10);
+      day   = parseInt(match[3], 10);
     } else {
       // Use today in IST timezone
       // toLocaleString with 'Asia/Kolkata' gives us a string representing the
