@@ -15,6 +15,14 @@ import { ConnectionsService, InviteListItem } from './connections.service';
 import { CreateInviteDto } from './dto/create-invite.dto';
 import { AcceptInviteDto } from './dto/accept-invite.dto';
 import { RenameConnectionDto } from './dto/rename-connection.dto';
+import { IsArray, IsString, ArrayMaxSize } from 'class-validator';
+
+class CheckContactsDto {
+  @IsArray()
+  @ArrayMaxSize(500)
+  @IsString({ each: true })
+  phones: string[];
+}
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { ConnectionMemberGuard } from '../guards/connection-member.guard';
 import { RateLimitGuard, RateLimit } from '../guards/rate-limit.guard';
@@ -80,6 +88,22 @@ export class ConnectionsController {
   }
 
   // ── List connections ───────────────────────────────────────────────────────
+
+  /**
+   * POST /v1/connections/check-contacts
+   * Checks which phone numbers in the user's contacts have Saanjh accounts.
+   * Phone numbers are hashed server-side — never stored or logged.
+   */
+  @Post('connections/check-contacts')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  checkContacts(
+    @CurrentUser() user: RequestUser,
+    @Body() dto: CheckContactsDto,
+  ) {
+    const salt = this.config.get<string>('phoneHashSalt') ?? '';
+    return this.connectionsService.checkContacts(user.id, dto.phones, salt);
+  }
 
   /**
    * GET /v1/connections
