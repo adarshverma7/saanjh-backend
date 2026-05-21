@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { FirebaseService } from './firebase.service';
 import { TooManyRequestsException } from '../shared/exceptions/too-many-requests.exception';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -99,6 +100,7 @@ export class AuthService {
     private readonly config: ConfigService,
     private readonly jwtService: JwtService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly firebaseService: FirebaseService,
   ) {}
 
   // ── Send OTP ────────────────────────────────────────────────────────────────
@@ -267,6 +269,79 @@ export class AuthService {
       `UPDATE device_sessions
        SET refresh_token_hash = $1, last_used_at = NOW()
        WHERE id = $2`,
+      [refreshHash, session.id],
+    );
+
+    return {
+      access_token: accessToken,
+      refresh_token: refreshToken,
+      is_new_user: isNewUser,
+      user: this.toProfile(user),
+    };
+  }
+
+  // ── Firebase Phone Auth ──────────────────────────────────────────────────
+
+  /**
+   * Verifies a Firebase ID token (issued after phone OTP verified in Flutter)
+   * and returns our own JWT pair. Creates a new user if first login.
+   */
+  async verifyFirebaseToken(
+    idToken: string,
+    deviceInfo: DeviceInfo,
+  ): Promise<AuthTokens> {
+    // FirebaseService does the token verification — it throws if invalid
+    const { phone } = await this.firebaseService.verifyIdToken(idToken);
+
+    // ── Find or create user (same logic as verifyOtp) ────────────────────────
+    let isNewUser = false;
+    let user: DbUser;
+
+    const existingRows = await this.db.query<DbUser[]>(
+      `SELECT id, phone, name, language, timezone, is_onboarded, is_verified,
+              is_active, deleted_at
+       FROM users WHERE phone = $1`,
+      [phone],
+    );
+
+    if (existingRows.length) {
+      user = existingRows[0];
+      if (user.deleted_at !== null) {
+        throw new ForbiddenException({
+          error: 'ACCOUNT_DELETED',
+          message: 'This account has been deleted. Contact support if this is a mistake.',
+        });
+      }
+      if (!user.is_verified) {
+        await this.db.query(
+          `UPDATE users SET is_verified = true, updated_at = NOW() WHERE id = $1`,
+          [user.id],
+        );
+        user.is_verified = true;
+      }
+    } else {
+      isNewUser = true;
+      const salt = this.config.get<string>('phoneHashSalt') ?? '';
+      const phoneHash = hashPhone(phone, salt);
+      const newRows = await this.db.query<DbUser[]>(
+        `INSERT INTO users (phone, phone_hash, is_verified, language, timezone)
+         VALUES ($1, $2, true, 'en', 'Asia/Kolkata')
+         RETURNING id, phone, name, language, timezone, is_onboarded,
+                   is_verified, is_active, deleted_at`,
+        [phone, phoneHash],
+      );
+      user = newRows[0];
+      await this.writeAuditLog(user.id, 'user.created', 'user', user.id);
+      this.eventEmitter.emit('user.created', { userId: user.id, phoneHash, salt });
+    }
+
+    const session = await this.upsertDeviceSession(user.id, deviceInfo);
+    const { accessToken, refreshToken } = this.generateTokenPair(
+      user.id, session.id, deviceInfo.device_id,
+    );
+    const refreshHash = hashRefreshToken(refreshToken);
+    await this.db.query(
+      `UPDATE device_sessions SET refresh_token_hash = $1, last_used_at = NOW() WHERE id = $2`,
       [refreshHash, session.id],
     );
 

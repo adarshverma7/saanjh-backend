@@ -16,6 +16,15 @@ import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { ConfirmDeleteDto } from './dto/confirm-delete.dto';
+import { IsString, IsNotEmpty, IsOptional } from 'class-validator';
+
+class VerifyFirebaseDto {
+  @IsString() @IsNotEmpty() id_token: string;
+  @IsString() @IsNotEmpty() device_id: string;
+  @IsOptional() @IsString() device_type?: string;
+  @IsOptional() @IsString() app_version?: string;
+  @IsOptional() @IsString() fcm_token?: string;
+}
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { RateLimitGuard, RateLimit } from '../guards/rate-limit.guard';
 import { CurrentUser } from '../decorators/current-user.decorator';
@@ -62,6 +71,22 @@ export class AuthController {
       device_type: dto.device_type,
       app_version: dto.app_version,
       fcm_token: dto.fcm_token,
+    });
+  }
+
+  /**
+   * POST /v1/auth/firebase/verify
+   * Accepts a Firebase ID token (issued after phone OTP verified by Firebase in Flutter).
+   * Creates user if new, returns our own JWT pair.
+   */
+  @Post('firebase/verify')
+  @HttpCode(HttpStatus.OK)
+  async verifyFirebase(@Body() dto: VerifyFirebaseDto) {
+    return this.authService.verifyFirebaseToken(dto.id_token, {
+      device_id:   dto.device_id,
+      device_type: dto.device_type,
+      app_version: dto.app_version,
+      fcm_token:   dto.fcm_token,
     });
   }
 
