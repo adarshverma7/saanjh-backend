@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { PassportModule } from '@nestjs/passport';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { FirebaseService } from './firebase.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 
 @Module({
@@ -15,8 +16,9 @@ import { JwtStrategy } from './strategies/jwt.strategy';
   controllers: [AuthController],
   providers: [
     AuthService,
-    JwtStrategy, // Registers the passport-jwt strategy in the DI container
+    FirebaseService,
+    JwtStrategy,
   ],
-  exports: [AuthService, JwtStrategy],
+  exports: [AuthService, FirebaseService, JwtStrategy],
 })
 export class AuthModule {}
