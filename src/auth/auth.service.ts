@@ -578,11 +578,10 @@ export class AuthService {
     // Production: send via MSG91
     const authKey = this.config.get<string>('msg91.authKey');
     if (!authKey) {
-      this.logger.error('MSG91_AUTH_KEY not configured in production');
-      throw new ServiceUnavailableException({
-        error: 'SMS_FAILED',
-        message: 'SMS service is not available. Please try again later.',
-      });
+      // MSG91 not configured — log OTP so developer can test manually
+      // REMOVE THIS LOG before going fully public (replace with real SMS key)
+      this.logger.warn(`[NO-SMS] OTP for ${maskPhone(phone)}: ${otp} — add MSG91_AUTH_KEY to enable real SMS`);
+      return;
     }
 
     try {
