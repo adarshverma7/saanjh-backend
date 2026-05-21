@@ -6,6 +6,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { getDataSourceToken } from '@nestjs/typeorm';
 import { AuthService } from './auth.service';
+import { FirebaseService } from './firebase.service';
 import { hashOtp, hashRefreshToken } from '../shared/helpers/phone.helper';
 
 // ── Test fixtures ─────────────────────────────────────────────────────────────
@@ -91,6 +92,7 @@ describe('AuthService', () => {
         { provide: ConfigService, useValue: mockConfig },
         { provide: JwtService, useValue: mockJwt },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },
+        { provide: FirebaseService, useValue: { verifyIdToken: jest.fn() } },
       ],
     }).compile();
 
