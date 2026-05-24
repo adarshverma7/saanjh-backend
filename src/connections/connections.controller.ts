@@ -15,6 +15,7 @@ import { ConnectionsService, InviteListItem } from './connections.service';
 import { CreateInviteDto } from './dto/create-invite.dto';
 import { AcceptInviteDto } from './dto/accept-invite.dto';
 import { RenameConnectionDto } from './dto/rename-connection.dto';
+import { ConnectDirectDto } from './dto/connect-direct.dto';
 import { IsArray, IsString, ArrayMaxSize } from 'class-validator';
 
 class CheckContactsDto {
@@ -88,6 +89,29 @@ export class ConnectionsController {
   }
 
   // ── List connections ───────────────────────────────────────────────────────
+
+  /**
+   * POST /v1/connections/connect-direct
+   * Creates a diary connection with an existing Saanjh user in one step.
+   * If a connection already exists it is returned instead of creating a duplicate.
+   * Used by the Discover screen "Start diary" button.
+   */
+  @Post('connections/connect-direct')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  connectDirect(
+    @CurrentUser() user: RequestUser,
+    @Body() dto: ConnectDirectDto,
+  ) {
+    const salt = this.config.get<string>('phoneHashSalt') ?? '';
+    return this.connectionsService.connectDirect(
+      user.id,
+      dto.phone,
+      dto.connection_name,
+      dto.relationship_type,
+      salt,
+    );
+  }
 
   /**
    * POST /v1/connections/check-contacts
