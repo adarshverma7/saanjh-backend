@@ -171,11 +171,7 @@ export class UsersService {
     userId: string,
   ): Promise<{ upload_url: string; avatar_key: string }> {
     const avatarKey = StorageService.avatarKey(userId);
-    const uploadUrl = await this.storage.getPresignedUploadUrl(
-      avatarKey,
-      'image/jpeg',
-      900,
-    );
+    const uploadUrl = await this.storage.getSignedUploadUrl(avatarKey);
     return { upload_url: uploadUrl, avatar_key: avatarKey };
   }
 

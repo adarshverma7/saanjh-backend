@@ -1,158 +1,104 @@
 import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  HeadObjectCommand,
-  DeleteObjectCommand,
-} from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { Readable } from 'stream';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
+
+const BUCKET = 'saanjh-media';
 
 @Injectable()
 export class StorageService {
   private readonly logger = new Logger(StorageService.name);
-  private readonly client: S3Client;
-  private readonly bucket: string;
+  private readonly supabase: SupabaseClient;
   private readonly prefix: string;
 
   constructor(private readonly config: ConfigService) {
-    this.bucket = this.config.get<string>('r2.bucketName') ?? '';
+    const url = this.config.get<string>('supabase.url') ?? '';
+    const key = this.config.get<string>('supabase.serviceKey') ?? '';
+    this.supabase = createClient(url, key);
     this.prefix = this.config.get<string>('storagePrefix') ?? '';
-
-    this.client = new S3Client({
-      region: 'auto',
-      endpoint: this.config.get<string>('r2.endpoint'),
-      credentials: {
-        accessKeyId: this.config.get<string>('r2.accessKeyId') ?? '',
-        secretAccessKey: this.config.get<string>('r2.secretAccessKey') ?? '',
-      },
-    });
   }
 
-  // ── Pre-signed URLs ────────────────────────────────────────────────────────
+  // ── Signed upload URL (Flutter PUTs directly to this URL) ─────────────────
 
-  /**
-   * Returns a pre-signed PUT URL valid for 15 minutes.
-   * Flutter uploads directly to R2 — the API server never touches the binary.
-   */
-  async getPresignedUploadUrl(
-    key: string,
-    contentType: string,
-    expiresIn = 900,
-  ): Promise<string> {
-    const command = new PutObjectCommand({
-      Bucket: this.bucket,
-      Key: this.addPrefix(key),
-      ContentType: contentType,
-    });
-    return getSignedUrl(this.client, command, { expiresIn });
+  async getSignedUploadUrl(key: string): Promise<string> {
+    const { data, error } = await this.supabase.storage
+      .from(BUCKET)
+      .createSignedUploadUrl(this.addPrefix(key));
+    if (error || !data) {
+      this.logger.error(`getSignedUploadUrl failed key=${key}`, error);
+      throw new InternalServerErrorException('STORAGE_UPLOAD_URL_ERROR');
+    }
+    return data.signedUrl;
   }
 
-  /**
-   * Returns a signed GET URL valid for 1 hour (default).
-   * Never expose public / unsigned URLs for private user media.
-   */
+  // ── Signed download URL (1 hour default) ──────────────────────────────────
+
   async getSignedDownloadUrl(key: string, expiresIn = 3600): Promise<string> {
-    const command = new GetObjectCommand({
-      Bucket: this.bucket,
-      Key: this.addPrefix(key),
-    });
-    return getSignedUrl(this.client, command, { expiresIn });
+    const { data, error } = await this.supabase.storage
+      .from(BUCKET)
+      .createSignedUrl(this.addPrefix(key), expiresIn);
+    if (error || !data) {
+      this.logger.error(`getSignedDownloadUrl failed key=${key}`, error);
+      throw new InternalServerErrorException('STORAGE_DOWNLOAD_ERROR');
+    }
+    return data.signedUrl;
   }
 
-  // ── Object operations ──────────────────────────────────────────────────────
+  // ── Server-side upload (used by PdfWorker for generated PDFs) ─────────────
 
-  /**
-   * Uploads a Buffer directly to R2. Used by PdfWorker for generated PDFs.
-   */
   async putObject(key: string, body: Buffer, contentType: string): Promise<void> {
-    try {
-      await this.client.send(
-        new PutObjectCommand({
-          Bucket: this.bucket,
-          Key: this.addPrefix(key),
-          Body: body,
-          ContentType: contentType,
-        }),
-      );
-    } catch (err) {
-      this.logger.error(`putObject error for key=${key}`, err);
+    const { error } = await this.supabase.storage
+      .from(BUCKET)
+      .upload(this.addPrefix(key), body, { contentType, upsert: true });
+    if (error) {
+      this.logger.error(`putObject failed key=${key}`, error);
       throw new InternalServerErrorException('STORAGE_UPLOAD_ERROR');
     }
   }
 
-  /**
-   * Returns true if the object exists in R2.
-   * Used to verify that Flutter completed the upload before creating the DB row.
-   */
+  // ── Existence check (called after Flutter finishes direct upload) ──────────
+
   async objectExists(key: string): Promise<boolean> {
-    try {
-      await this.client.send(
-        new HeadObjectCommand({
-          Bucket: this.bucket,
-          Key: this.addPrefix(key),
-        }),
-      );
-      return true;
-    } catch (err: unknown) {
-      const code = (err as { name?: string; $metadata?: { httpStatusCode?: number } });
-      if (
-        code.name === 'NotFound' ||
-        code.name === 'NoSuchKey' ||
-        code.$metadata?.httpStatusCode === 404
-      ) {
-        return false;
-      }
-      this.logger.error(`objectExists error for key=${key}`, err);
+    const prefixedKey = this.addPrefix(key);
+    const lastSlash = prefixedKey.lastIndexOf('/');
+    const folder = lastSlash >= 0 ? prefixedKey.slice(0, lastSlash) : '';
+    const filename = lastSlash >= 0 ? prefixedKey.slice(lastSlash + 1) : prefixedKey;
+
+    const { data, error } = await this.supabase.storage
+      .from(BUCKET)
+      .list(folder, { search: filename });
+    if (error) {
+      this.logger.error(`objectExists failed key=${key}`, error);
       throw new InternalServerErrorException('STORAGE_ERROR');
     }
+    return (data ?? []).some((f) => f.name === filename);
   }
 
-  /**
-   * Soft-delete wrapper: actual deletion is only called from the cleanup worker
-   * after the 90-day grace period. Direct callers should rarely use this.
-   */
+  // ── Delete (called from cleanup worker after grace period) ────────────────
+
   async deleteObject(key: string): Promise<void> {
-    try {
-      await this.client.send(
-        new DeleteObjectCommand({
-          Bucket: this.bucket,
-          Key: this.addPrefix(key),
-        }),
-      );
-    } catch (err) {
-      this.logger.error(`deleteObject error for key=${key}`, err);
+    const { error } = await this.supabase.storage
+      .from(BUCKET)
+      .remove([this.addPrefix(key)]);
+    if (error) {
+      this.logger.error(`deleteObject failed key=${key}`, error);
       throw new InternalServerErrorException('STORAGE_ERROR');
     }
   }
 
-  /**
-   * Downloads an object and returns it as a Node.js Buffer.
-   * Used by the TranscriptionWorker to fetch audio before sending to Whisper.
-   */
+  // ── Buffer download (used by TranscriptionWorker before sending to Whisper) ─
+
   async getObjectBuffer(key: string): Promise<Buffer> {
-    try {
-      const response = await this.client.send(
-        new GetObjectCommand({
-          Bucket: this.bucket,
-          Key: this.addPrefix(key),
-        }),
-      );
-
-      const body = response.Body;
-      if (!body) throw new Error('Empty response body from R2');
-
-      return streamToBuffer(body as Readable);
-    } catch (err) {
-      this.logger.error(`getObjectBuffer error for key=${key}`, err);
+    const { data, error } = await this.supabase.storage
+      .from(BUCKET)
+      .download(this.addPrefix(key));
+    if (error || !data) {
+      this.logger.error(`getObjectBuffer failed key=${key}`, error);
       throw new InternalServerErrorException('STORAGE_DOWNLOAD_ERROR');
     }
+    return Buffer.from(await data.arrayBuffer());
   }
 
-  // ── Media key generators ───────────────────────────────────────────────────
-  // Year/month partitioning in the path enables R2 lifecycle rules per time period.
+  // ── Media key generators ──────────────────────────────────────────────────
 
   static voiceKey(connectionId: string, entryId: string): string {
     const { year, month } = ymNow();
@@ -182,11 +128,6 @@ export class StorageService {
     return `books/${orderId}/memory_book.pdf`;
   }
 
-  /**
-   * Extracts the connectionId segment from a media key path.
-   * Used to verify an uploaded key actually belongs to the declared connection.
-   * Key format: entries/shared/{connectionId}/YYYY/MM/{entryId}.ext
-   */
   static extractConnectionIdFromKey(key: string): string | null {
     const match = /^entries\/shared\/([^/]+)\//.exec(key);
     return match ? match[1] : null;
@@ -197,14 +138,12 @@ export class StorageService {
     return match ? match[1] : null;
   }
 
-  // ── Private helpers ────────────────────────────────────────────────────────
+  // ── Private helpers ───────────────────────────────────────────────────────
 
   private addPrefix(key: string): string {
     return this.prefix ? `${this.prefix}${key}` : key;
   }
 }
-
-// ── Module-level helpers ───────────────────────────────────────────────────
 
 function ymNow(): { year: string; month: string } {
   const now = new Date();
@@ -212,12 +151,4 @@ function ymNow(): { year: string; month: string } {
     year: now.getUTCFullYear().toString(),
     month: String(now.getUTCMonth() + 1).padStart(2, '0'),
   };
-}
-
-async function streamToBuffer(stream: Readable): Promise<Buffer> {
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of stream) {
-    chunks.push(chunk as Uint8Array);
-  }
-  return Buffer.concat(chunks);
 }
