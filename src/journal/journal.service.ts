@@ -83,14 +83,7 @@ export class JournalService {
         ? StorageService.journalKey(userId, entryId).replace('.m4a', '.mp4')
         : StorageService.journalKey(userId, entryId);
 
-    const contentType =
-      dto.entry_type === 'voice' ? 'audio/m4a' : 'video/mp4';
-
-    const uploadUrl = await this.storage.getPresignedUploadUrl(
-      mediaKey,
-      contentType,
-      900,
-    );
+    const uploadUrl = await this.storage.getSignedUploadUrl(mediaKey);
 
     return { upload_url: uploadUrl, media_key: mediaKey, expires_in: 900 };
   }

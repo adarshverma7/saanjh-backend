@@ -19,15 +19,6 @@ export default () => ({
   refreshTokenSecret: process.env.REFRESH_TOKEN_SECRET ?? '',
   phoneHashSalt: process.env.PHONE_HASH_SALT ?? '',
 
-  // Cloudflare R2
-  r2: {
-    accessKeyId: process.env.R2_ACCESS_KEY_ID ?? '',
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? '',
-    bucketName: process.env.R2_BUCKET_NAME ?? '',
-    endpoint: process.env.R2_ENDPOINT ?? '',
-    publicCdn: process.env.R2_PUBLIC_CDN ?? '',
-  },
-
   // OpenAI (Whisper transcription)
   openaiApiKey: process.env.OPENAI_API_KEY ?? '',
 
@@ -51,11 +42,17 @@ export default () => ({
     authKey: process.env.MSG91_AUTH_KEY ?? '',
   },
 
-  // Firebase (Auth OTP for MVP)
+  // Firebase (Auth only — storage migrated to Supabase)
   firebase: {
-    projectId: process.env.FIREBASE_PROJECT_ID ?? '',
-    privateKey: (process.env.FIREBASE_PRIVATE_KEY ?? '').replace(/\\n/g, '\n'),
-    clientEmail: process.env.FIREBASE_CLIENT_EMAIL ?? '',
+    projectId:     process.env.FIREBASE_PROJECT_ID      ?? '',
+    privateKey:   (process.env.FIREBASE_PRIVATE_KEY     ?? '').replace(/\\n/g, '\n'),
+    clientEmail:   process.env.FIREBASE_CLIENT_EMAIL    ?? '',
+  },
+
+  // Supabase Storage
+  supabase: {
+    url:        process.env.SUPABASE_URL         ?? '',
+    serviceKey: process.env.SUPABASE_SERVICE_KEY ?? '',
   },
 
   // Admin

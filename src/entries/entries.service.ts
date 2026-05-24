@@ -24,10 +24,9 @@ import type { ListEntriesDto } from './dto/list-entries.dto';
 // ── Public types ─────────────────────────────────────────────────────────────
 
 export interface UploadUrlResult {
-  upload_url: string;
   media_key: string;
   entry_id: string;
-  expires_in: number;
+  upload_url: string;
 }
 
 export interface DiaryEntry {
@@ -45,10 +44,12 @@ export interface DiaryEntry {
   play_count: number;
   recorded_at: Date;
   created_at: Date;
+  is_expired: boolean;
+  diary_expires_at: Date | null;
 }
 
 export interface EntryWithUrl extends DiaryEntry {
-  media_url: string;
+  media_url: string | null;
   thumbnail_url: string | null;
 }
 
@@ -64,6 +65,9 @@ interface DbEntry extends DiaryEntry {
   media_key: string;
   thumbnail_key: string | null;
 }
+
+// 24 hours — content visible in diary thread for this long, then tombstoned
+const DIARY_EXPIRY_HOURS = 24;
 
 interface RateLimitRow { count: string }
 
@@ -99,21 +103,8 @@ export class EntriesService {
         ? StorageService.voiceKey(connectionId, entryId)
         : StorageService.videoKey(connectionId, entryId);
 
-    const contentType =
-      dto.entry_type === 'voice' ? 'audio/m4a' : 'video/mp4';
-
-    const uploadUrl = await this.storage.getPresignedUploadUrl(
-      mediaKey,
-      contentType,
-      900,
-    );
-
-    return {
-      upload_url: uploadUrl,
-      media_key: mediaKey,
-      entry_id: entryId,
-      expires_in: 900,
-    };
+    const uploadUrl = await this.storage.getSignedUploadUrl(mediaKey);
+    return { media_key: mediaKey, entry_id: entryId, upload_url: uploadUrl };
   }
 
   // ── Create Entry ───────────────────────────────────────────────────────────
@@ -149,12 +140,13 @@ export class EntriesService {
     const rows = await this.db.query<DbEntry[]>(
       `INSERT INTO diary_entries
          (connection_id, author_id, entry_type, media_key,
-          duration_seconds, mood, recorded_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+          duration_seconds, mood, recorded_at, diary_expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $7 + INTERVAL '${DIARY_EXPIRY_HOURS} hours')
        RETURNING id, connection_id, author_id, entry_type, media_key,
                  duration_seconds, file_size_bytes, thumbnail_key,
                  transcription, transcription_status, mood,
-                 is_starred, starred_at, play_count, recorded_at, created_at`,
+                 is_starred, starred_at, play_count, recorded_at, created_at,
+                 diary_expires_at`,
       [
         connectionId,
         userId,
@@ -247,7 +239,7 @@ export class EntriesService {
               duration_seconds, file_size_bytes, transcription,
               transcription_status, mood, is_starred, starred_at,
               play_count, recorded_at, created_at,
-              media_key, thumbnail_key
+              media_key, thumbnail_key, diary_expires_at
        FROM diary_entries
        ${where}
        ORDER BY recorded_at DESC, id DESC
@@ -286,11 +278,30 @@ export class EntriesService {
     connectionId: string,
     entryId: string,
   ): Promise<EntryWithUrl> {
+    return this._fetchEntryWithUrl(connectionId, entryId, false);
+  }
+
+  // Used by the Memory Tree — bypasses the 24-hour diary expiry so old moments
+  // remain fully playable even after they've vanished from the diary thread.
+  async getEntryForMoments(
+    _userId: string,
+    connectionId: string,
+    entryId: string,
+  ): Promise<EntryWithUrl> {
+    return this._fetchEntryWithUrl(connectionId, entryId, true);
+  }
+
+  private async _fetchEntryWithUrl(
+    connectionId: string,
+    entryId: string,
+    bypassExpiry: boolean,
+  ): Promise<EntryWithUrl> {
     const rows = await this.db.query<DbEntry[]>(
       `SELECT id, connection_id, author_id, entry_type, media_key,
               thumbnail_key, duration_seconds, file_size_bytes,
               transcription, transcription_status, mood,
-              is_starred, starred_at, play_count, recorded_at, created_at
+              is_starred, starred_at, play_count, recorded_at, created_at,
+              diary_expires_at
        FROM diary_entries
        WHERE id = $1
          AND connection_id = $2
@@ -306,19 +317,22 @@ export class EntriesService {
     }
 
     const entry = rows[0];
+    const isExpired = this._isExpired(entry.diary_expires_at);
 
-    // Generate signed URL (1-hour expiry)
-    const mediaUrl = await this.storage.getSignedDownloadUrl(
-      entry.media_key,
-      3600,
-    );
+    // Diary thread: expired entries return tombstone (no media URL).
+    // Memory Tree (bypassExpiry): always return the signed URL.
+    if (isExpired && !bypassExpiry) {
+      return {
+        ...this.toPublic(entry),
+        media_url: null,
+        thumbnail_url: null,
+      };
+    }
 
-    // Signed thumbnail URL for videos
+    const mediaUrl = await this.storage.getSignedDownloadUrl(entry.media_key, 3600);
     const thumbnailUrl =
       entry.entry_type === 'video' && entry.thumbnail_key
-        ? await this.storage
-            .getSignedDownloadUrl(entry.thumbnail_key, 3600)
-            .catch(() => null)
+        ? await this.storage.getSignedDownloadUrl(entry.thumbnail_key, 3600).catch(() => null)
         : null;
 
     return {
@@ -326,6 +340,11 @@ export class EntriesService {
       media_url: mediaUrl,
       thumbnail_url: thumbnailUrl,
     };
+  }
+
+  private _isExpired(expiresAt: Date | null): boolean {
+    if (!expiresAt) return false;
+    return new Date(expiresAt) < new Date();
   }
 
   // ── Star / Unstar ──────────────────────────────────────────────────────────
@@ -491,7 +510,7 @@ export class EntriesService {
 
   private toPublic(entry: DbEntry): DiaryEntry {
     // Never expose media_key or thumbnail_key in list responses.
-    // Signed URLs are generated only in getEntry.
+    // Signed URLs are generated only in getEntry / getEntryForMoments.
     return {
       id: entry.id,
       connection_id: entry.connection_id,
@@ -507,6 +526,8 @@ export class EntriesService {
       play_count: Number(entry.play_count),
       recorded_at: entry.recorded_at,
       created_at: entry.created_at,
+      is_expired: this._isExpired(entry.diary_expires_at),
+      diary_expires_at: entry.diary_expires_at,
     };
   }
 
