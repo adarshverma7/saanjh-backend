@@ -48,6 +48,9 @@ export class DiaryEntry {
   @Column({ type: 'timestamptz', nullable: true })
   starred_at: Date | null;
 
+  @Column({ type: 'timestamptz', nullable: true })
+  diary_expires_at: Date | null;
+
   @Column({ type: 'smallint', default: 0 })
   play_count: number;
 
