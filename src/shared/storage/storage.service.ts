@@ -1,26 +1,29 @@
 import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { StorageClient } from '@supabase/storage-js';
 
 const BUCKET = 'saanjh-media';
 
 @Injectable()
 export class StorageService {
   private readonly logger = new Logger(StorageService.name);
-  private readonly supabase: SupabaseClient;
+  private readonly storage: StorageClient;
   private readonly prefix: string;
 
   constructor(private readonly config: ConfigService) {
     const url = this.config.get<string>('supabase.url') ?? '';
     const key = this.config.get<string>('supabase.serviceKey') ?? '';
-    this.supabase = createClient(url, key);
+    this.storage = new StorageClient(`${url}/storage/v1`, {
+      Authorization: `Bearer ${key}`,
+      apikey: key,
+    });
     this.prefix = this.config.get<string>('storagePrefix') ?? '';
   }
 
   // ── Signed upload URL (Flutter PUTs directly to this URL) ─────────────────
 
   async getSignedUploadUrl(key: string): Promise<string> {
-    const { data, error } = await this.supabase.storage
+    const { data, error } = await this.storage
       .from(BUCKET)
       .createSignedUploadUrl(this.addPrefix(key));
     if (error || !data) {
@@ -33,7 +36,7 @@ export class StorageService {
   // ── Signed download URL (1 hour default) ──────────────────────────────────
 
   async getSignedDownloadUrl(key: string, expiresIn = 3600): Promise<string> {
-    const { data, error } = await this.supabase.storage
+    const { data, error } = await this.storage
       .from(BUCKET)
       .createSignedUrl(this.addPrefix(key), expiresIn);
     if (error || !data) {
@@ -46,7 +49,7 @@ export class StorageService {
   // ── Server-side upload (used by PdfWorker for generated PDFs) ─────────────
 
   async putObject(key: string, body: Buffer, contentType: string): Promise<void> {
-    const { error } = await this.supabase.storage
+    const { error } = await this.storage
       .from(BUCKET)
       .upload(this.addPrefix(key), body, { contentType, upsert: true });
     if (error) {
@@ -63,7 +66,7 @@ export class StorageService {
     const folder = lastSlash >= 0 ? prefixedKey.slice(0, lastSlash) : '';
     const filename = lastSlash >= 0 ? prefixedKey.slice(lastSlash + 1) : prefixedKey;
 
-    const { data, error } = await this.supabase.storage
+    const { data, error } = await this.storage
       .from(BUCKET)
       .list(folder, { search: filename });
     if (error) {
@@ -76,7 +79,7 @@ export class StorageService {
   // ── Delete (called from cleanup worker after grace period) ────────────────
 
   async deleteObject(key: string): Promise<void> {
-    const { error } = await this.supabase.storage
+    const { error } = await this.storage
       .from(BUCKET)
       .remove([this.addPrefix(key)]);
     if (error) {
@@ -88,7 +91,7 @@ export class StorageService {
   // ── Buffer download (used by TranscriptionWorker before sending to Whisper) ─
 
   async getObjectBuffer(key: string): Promise<Buffer> {
-    const { data, error } = await this.supabase.storage
+    const { data, error } = await this.storage
       .from(BUCKET)
       .download(this.addPrefix(key));
     if (error || !data) {
