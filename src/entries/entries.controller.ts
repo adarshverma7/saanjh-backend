@@ -79,6 +79,7 @@ export class EntriesController {
   /**
    * GET /v1/connections/:id/entries/:entryId
    * Returns entry with 1-hour signed media URL for playback.
+   * Expired entries (>24h) return is_expired:true and no media_url.
    */
   @Get(':entryId')
   getEntry(
@@ -87,6 +88,20 @@ export class EntriesController {
     @Param('entryId') entryId: string,
   ) {
     return this.entriesService.getEntry(user.id, connectionId, entryId);
+  }
+
+  /**
+   * GET /v1/connections/:id/entries/:entryId/moments
+   * Same as getEntry but bypasses the 24-hour diary expiry.
+   * Used exclusively by the Memory Tree to play old moments.
+   */
+  @Get(':entryId/moments')
+  getEntryForMoments(
+    @CurrentUser() user: RequestUser,
+    @Param('id') connectionId: string,
+    @Param('entryId') entryId: string,
+  ) {
+    return this.entriesService.getEntryForMoments(user.id, connectionId, entryId);
   }
 
   /**
