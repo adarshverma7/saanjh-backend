@@ -37,7 +37,7 @@ describe('JournalService', () => {
     mockDb = { query: jest.fn() };
     mockStorage = {
       objectExists: jest.fn().mockResolvedValue(true),
-      getPresignedUploadUrl: jest.fn().mockResolvedValue('https://r2.upload.url'),
+      getSignedUploadUrl: jest.fn().mockResolvedValue('https://r2.upload.url'),
       getSignedDownloadUrl: jest.fn().mockResolvedValue('https://r2.play.url'),
     };
 

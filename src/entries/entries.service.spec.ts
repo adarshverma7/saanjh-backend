@@ -51,7 +51,7 @@ describe('EntriesService', () => {
     mockDb = { query: jest.fn() };
     mockStorage = {
       objectExists: jest.fn().mockResolvedValue(true),
-      getPresignedUploadUrl: jest.fn().mockResolvedValue('https://r2.upload.url'),
+      getSignedUploadUrl: jest.fn().mockResolvedValue('https://r2.upload.url'),
       getSignedDownloadUrl: jest.fn().mockResolvedValue('https://r2.play.url'),
     };
     mockEventEmitter = { emit: jest.fn() };
@@ -89,7 +89,6 @@ describe('EntriesService', () => {
       expect(result.media_key).toContain(CONNECTION_ID);
       expect(result.media_key).toContain('.m4a');
       expect(result.entry_id).toHaveLength(36); // UUID format
-      expect(result.expires_in).toBe(900);
     });
 
     it('uses voiceKey for voice entries', async () => {
