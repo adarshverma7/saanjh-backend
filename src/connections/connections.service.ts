@@ -451,7 +451,7 @@ export class ConnectionsService {
     userId: string,
     phones: string[],
     salt: string,
-  ): Promise<{ phone: string; name: string | null }[]> {
+  ): Promise<{ phone: string; name: string | null; connection_id: string | null }[]> {
     if (!phones.length) return [];
 
     // Normalise and hash each number
@@ -470,20 +470,111 @@ export class ConnectionsService {
     if (!pairs.length) return [];
     const hashes = pairs.map((p) => p.hash);
 
-    // Look up which hashes exist in the users table
-    const rows = await this.db.query<{ phone_hash: string; name: string | null }[]>(
-      `SELECT phone_hash, name FROM users
-       WHERE phone_hash = ANY($1::text[])
-         AND deleted_at IS NULL
-         AND id != $2`,
+    // Look up which hashes exist — LEFT JOIN to surface existing connection IDs.
+    const rows = await this.db.query<{
+      phone_hash: string;
+      name: string | null;
+      connection_id: string | null;
+    }[]>(
+      `SELECT u.phone_hash, u.name,
+              dc.id AS connection_id
+       FROM users u
+       LEFT JOIN diary_connections dc
+         ON ((dc.user_a_id = $2 AND dc.user_b_id = u.id)
+          OR (dc.user_b_id = $2 AND dc.user_a_id = u.id))
+         AND dc.status = 'active'
+       WHERE u.phone_hash = ANY($1::text[])
+         AND u.deleted_at IS NULL
+         AND u.id != $2`,
       [hashes, userId],
     );
 
-    const found = new Map(rows.map((r) => [r.phone_hash, r.name]));
+    const found = new Map(
+      rows.map((r) => [r.phone_hash, { name: r.name, connection_id: r.connection_id }]),
+    );
 
     return pairs
       .filter((p) => found.has(p.hash))
-      .map((p) => ({ phone: p.phone, name: found.get(p.hash) ?? null }));
+      .map((p) => ({
+        phone: p.phone,
+        name: found.get(p.hash)?.name ?? null,
+        connection_id: found.get(p.hash)?.connection_id ?? null,
+      }));
+  }
+
+  // ── Direct connect (both users already on Saanjh) ─────────────────────────
+
+  /**
+   * Creates a diary connection between two existing Saanjh users in one step.
+   * If a connection already exists, returns it instead of creating a duplicate.
+   * Used by the Discover screen "Start diary" button.
+   */
+  async connectDirect(
+    userId: string,
+    phone: string,
+    connectionName: string,
+    relationshipType: string,
+    salt: string,
+  ): Promise<{ connection_id: string }> {
+    const normalised = normalizePhone(phone);
+    const phoneHash = hashPhone(normalised, salt);
+
+    // Resolve partner
+    const partnerRows = await this.db.query<{ id: string }[]>(
+      `SELECT id FROM users
+       WHERE phone_hash = $1 AND deleted_at IS NULL AND id != $2
+       LIMIT 1`,
+      [phoneHash, userId],
+    );
+
+    if (!partnerRows.length) {
+      throw new NotFoundException({
+        error: 'USER_NOT_FOUND',
+        message: 'No Saanjh user found with this phone number.',
+      });
+    }
+
+    const partnerId = partnerRows[0].id;
+
+    // Return existing connection if one already exists
+    const existingRows = await this.db.query<{ id: string }[]>(
+      `SELECT id FROM diary_connections
+       WHERE ((user_a_id = $1 AND user_b_id = $2)
+           OR (user_a_id = $2 AND user_b_id = $1))
+         AND status = 'active'
+       LIMIT 1`,
+      [userId, partnerId],
+    );
+
+    if (existingRows.length) {
+      return { connection_id: existingRows[0].id };
+    }
+
+    // Enforce pair ordering: smaller UUID → user_a (DB CHECK constraint)
+    const [userAId, userBId] = [userId, partnerId].sort();
+    const currentUserIsA = userAId === userId;
+
+    const connRows = await this.db.query<{ id: string }[]>(
+      `INSERT INTO diary_connections
+         (user_a_id, user_b_id, relationship_type, initiated_by,
+          status, name_for_a, name_for_b)
+       VALUES ($1, $2, $3, $4, 'active', $5, $6)
+       RETURNING id`,
+      [
+        userAId,
+        userBId,
+        relationshipType,
+        userId,
+        currentUserIsA ? connectionName : null,
+        currentUserIsA ? null : connectionName,
+      ],
+    );
+
+    const connectionId = connRows[0].id;
+
+    await this.writeAuditLog(userId, 'connection.created', 'diary_connection', connectionId);
+
+    return { connection_id: connectionId };
   }
 
   // ── List connections ───────────────────────────────────────────────────────
