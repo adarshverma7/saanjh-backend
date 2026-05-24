@@ -32,7 +32,7 @@ describe('UsersService', () => {
     mockDb = { query: jest.fn() };
     mockStorage = {
       getSignedDownloadUrl: jest.fn().mockResolvedValue('https://signed-url.example.com'),
-      getPresignedUploadUrl: jest.fn().mockResolvedValue('https://upload-url.example.com'),
+      getSignedUploadUrl: jest.fn().mockResolvedValue('https://upload-url.example.com'),
       objectExists: jest.fn().mockResolvedValue(true),
       deleteObject: jest.fn().mockResolvedValue(undefined),
     };
