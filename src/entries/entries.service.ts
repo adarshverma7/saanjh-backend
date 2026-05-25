@@ -114,8 +114,16 @@ export class EntriesService {
     connectionId: string,
     dto: CreateEntryDto,
   ): Promise<DiaryEntry> {
-    // ── 1. Verify the upload completed in R2 ──────────────────────────────────
-    const exists = await this.storage.objectExists(dto.media_key);
+    // ── 1. Verify the upload completed in storage ─────────────────────────────
+    // Supabase Storage has eventual consistency — the object may not be
+    // visible immediately after a signed-URL PUT. Retry up to 3 times with
+    // 600 ms gaps before giving up.
+    let exists = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      exists = await this.storage.objectExists(dto.media_key);
+      if (exists) break;
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 600));
+    }
     if (!exists) {
       throw new BadRequestException({
         error: 'MEDIA_NOT_UPLOADED',
