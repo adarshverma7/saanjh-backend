@@ -161,35 +161,30 @@ describe('EntriesService', () => {
     });
 
     it('throws MEDIA_NOT_UPLOADED when R2 object does not exist', async () => {
-      (mockStorage.objectExists as jest.Mock).mockResolvedValueOnce(false);
+      jest.useFakeTimers();
 
-      await expect(
-        service.createEntry(AUTHOR_ID, CONNECTION_ID, {
-          media_key: validMediaKey,
-          entry_type: 'voice',
-          duration_seconds: 15,
-        }),
-      ).rejects.toThrow(BadRequestException);
+      // Retry loop calls objectExists up to 3 times — all must return false to exhaust retries
+      (mockStorage.objectExists as jest.Mock)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(false);
 
-      const err = await service
+      // Attach .catch() before advancing timers to avoid unhandled rejection warning
+      const errPromise = service
         .createEntry(AUTHOR_ID, CONNECTION_ID, {
           media_key: validMediaKey,
           entry_type: 'voice',
           duration_seconds: 15,
         })
         .catch((e: BadRequestException) => e);
+      await jest.runAllTimersAsync();
 
-      // Reset and check the error code
-      (mockStorage.objectExists as jest.Mock).mockResolvedValueOnce(false);
-      let caught: BadRequestException | null = null;
-      await service
-        .createEntry(AUTHOR_ID, CONNECTION_ID, {
-          media_key: validMediaKey, entry_type: 'voice', duration_seconds: 15,
-        })
-        .catch((e: BadRequestException) => { caught = e; });
+      const err = await errPromise;
+      jest.useRealTimers();
 
-      const body = (caught as unknown as BadRequestException)?.getResponse() as { error: string } | undefined;
-      if (body) expect(body.error).toBe('MEDIA_NOT_UPLOADED');
+      expect(err).toBeInstanceOf(BadRequestException);
+      const body = (err as BadRequestException).getResponse() as { error: string };
+      expect(body.error).toBe('MEDIA_NOT_UPLOADED');
     });
 
     it('throws INVALID_MEDIA_KEY when key belongs to different connection', async () => {
