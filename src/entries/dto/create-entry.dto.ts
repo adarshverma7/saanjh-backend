@@ -6,20 +6,31 @@ import {
   Max,
   IsOptional,
   IsDateString,
+  MaxLength,
+  ValidateIf,
 } from 'class-validator';
 
 export class CreateEntryDto {
-  /** R2 object key returned by POST .../upload-url */
-  @IsString()
-  media_key: string;
-
-  @IsIn(['voice', 'video'])
+  @IsIn(['voice', 'video', 'text'])
   entry_type: string;
 
+  /** R2 object key returned by POST .../upload-url — required for voice/video */
+  @ValidateIf(o => o.entry_type !== 'text')
+  @IsString()
+  media_key?: string;
+
+  /** Required for voice/video (1–20 s). Omitted for text (stored as NULL). */
+  @ValidateIf(o => o.entry_type !== 'text')
   @IsInt()
   @Min(1)
   @Max(20)
-  duration_seconds: number;
+  duration_seconds?: number;
+
+  /** Text body — required for text entries, max 2000 chars */
+  @ValidateIf(o => o.entry_type === 'text')
+  @IsString()
+  @MaxLength(2000)
+  content?: string;
 
   @IsOptional()
   @IsIn(['happy', 'calm', 'thoughtful', 'missing', 'excited'])

@@ -34,6 +34,7 @@ export interface DiaryEntry {
   connection_id: string;
   author_id: string;
   entry_type: string;
+  content: string | null;
   duration_seconds: number | null;
   file_size_bytes: number | null;
   transcription: string | null;
@@ -46,6 +47,8 @@ export interface DiaryEntry {
   created_at: Date;
   is_expired: boolean;
   diary_expires_at: Date | null;
+  saved_to_moments: boolean;
+  saved_to_moments_at: Date | null;
 }
 
 export interface EntryWithUrl extends DiaryEntry {
@@ -62,7 +65,7 @@ export interface PageResult {
 
 // Internal DB row (includes media_key for download URL generation)
 interface DbEntry extends DiaryEntry {
-  media_key: string;
+  media_key: string | null;
   thumbnail_key: string | null;
 }
 
@@ -114,57 +117,66 @@ export class EntriesService {
     connectionId: string,
     dto: CreateEntryDto,
   ): Promise<DiaryEntry> {
-    // ── 1. Verify the upload completed in storage ─────────────────────────────
-    // Supabase Storage has eventual consistency — the object may not be
-    // visible immediately after a signed-URL PUT. Retry up to 3 times with
-    // 600 ms gaps before giving up.
-    let exists = false;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      exists = await this.storage.objectExists(dto.media_key);
-      if (exists) break;
-      if (attempt < 2) await new Promise((r) => setTimeout(r, 600));
-    }
-    if (!exists) {
-      throw new BadRequestException({
-        error: 'MEDIA_NOT_UPLOADED',
-        message:
-          'Media file not found. Please upload the audio/video before creating the entry.',
-      });
-    }
+    const isText = dto.entry_type === 'text';
 
-    // Security: media_key must belong to this connection
-    const keyConnectionId =
-      StorageService.extractConnectionIdFromKey(dto.media_key);
-    if (keyConnectionId && keyConnectionId !== connectionId) {
-      throw new BadRequestException({
-        error: 'INVALID_MEDIA_KEY',
-        message: 'Media key does not belong to this connection.',
-      });
+    if (!isText) {
+      // ── 1. Verify the upload completed in storage ───────────────────────────
+      // Supabase Storage has eventual consistency — the object may not be
+      // visible immediately after a signed-URL PUT. Retry up to 3 times with
+      // 600 ms gaps before giving up.
+      let exists = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        exists = await this.storage.objectExists(dto.media_key!);
+        if (exists) break;
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 600));
+      }
+      if (!exists) {
+        throw new BadRequestException({
+          error: 'MEDIA_NOT_UPLOADED',
+          message:
+            'Media file not found. Please upload the audio/video before creating the entry.',
+        });
+      }
+
+      // Security: media_key must belong to this connection
+      const keyConnectionId =
+        StorageService.extractConnectionIdFromKey(dto.media_key!);
+      if (keyConnectionId && keyConnectionId !== connectionId) {
+        throw new BadRequestException({
+          error: 'INVALID_MEDIA_KEY',
+          message: 'Media key does not belong to this connection.',
+        });
+      }
     }
 
     // ── 2. Insert diary entry ─────────────────────────────────────────────────
     const recordedAt = dto.recorded_at ? new Date(dto.recorded_at) : new Date();
 
-    const rows = await this.db.query<DbEntry[]>(
-      `INSERT INTO diary_entries
-         (connection_id, author_id, entry_type, media_key,
-          duration_seconds, mood, recorded_at, diary_expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $7 + INTERVAL '${DIARY_EXPIRY_HOURS} hours')
-       RETURNING id, connection_id, author_id, entry_type, media_key,
-                 duration_seconds, file_size_bytes, thumbnail_key,
-                 transcription, transcription_status, mood,
-                 is_starred, starred_at, play_count, recorded_at, created_at,
-                 diary_expires_at`,
-      [
-        connectionId,
-        userId,
-        dto.entry_type,
-        dto.media_key,
-        dto.duration_seconds,
-        dto.mood ?? null,
-        recordedAt,
-      ],
-    );
+    const rows = isText
+      ? await this.db.query<DbEntry[]>(
+          // Text messages: no media, no expiry, content stored inline
+          `INSERT INTO diary_entries
+             (connection_id, author_id, entry_type, content, mood, recorded_at)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING id, connection_id, author_id, entry_type, content,
+                     media_key, duration_seconds, file_size_bytes, thumbnail_key,
+                     transcription, transcription_status, mood,
+                     is_starred, starred_at, play_count, recorded_at, created_at,
+                     diary_expires_at, saved_to_moments, saved_to_moments_at`,
+          [connectionId, userId, dto.entry_type, dto.content, dto.mood ?? null, recordedAt],
+        )
+      : await this.db.query<DbEntry[]>(
+          `INSERT INTO diary_entries
+             (connection_id, author_id, entry_type, media_key,
+              duration_seconds, mood, recorded_at, diary_expires_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $7 + INTERVAL '${DIARY_EXPIRY_HOURS} hours')
+           RETURNING id, connection_id, author_id, entry_type, content,
+                     media_key, duration_seconds, file_size_bytes, thumbnail_key,
+                     transcription, transcription_status, mood,
+                     is_starred, starred_at, play_count, recorded_at, created_at,
+                     diary_expires_at, saved_to_moments, saved_to_moments_at`,
+          [connectionId, userId, dto.entry_type, dto.media_key, dto.duration_seconds, dto.mood ?? null, recordedAt],
+        );
 
     const entry = rows[0];
 
@@ -244,11 +256,12 @@ export class EntriesService {
     const pLimit = params.length;
 
     const rows = await this.db.query<DbEntry[]>(
-      `SELECT id, connection_id, author_id, entry_type,
+      `SELECT id, connection_id, author_id, entry_type, content,
               duration_seconds, file_size_bytes, transcription,
               transcription_status, mood, is_starred, starred_at,
               play_count, recorded_at, created_at,
-              media_key, thumbnail_key, diary_expires_at
+              media_key, thumbnail_key, diary_expires_at,
+              saved_to_moments, saved_to_moments_at
        FROM diary_entries
        ${where}
        ORDER BY recorded_at DESC, id DESC
@@ -306,11 +319,11 @@ export class EntriesService {
     bypassExpiry: boolean,
   ): Promise<EntryWithUrl> {
     const rows = await this.db.query<DbEntry[]>(
-      `SELECT id, connection_id, author_id, entry_type, media_key,
-              thumbnail_key, duration_seconds, file_size_bytes,
+      `SELECT id, connection_id, author_id, entry_type, content,
+              media_key, thumbnail_key, duration_seconds, file_size_bytes,
               transcription, transcription_status, mood,
               is_starred, starred_at, play_count, recorded_at, created_at,
-              diary_expires_at
+              diary_expires_at, saved_to_moments, saved_to_moments_at
        FROM diary_entries
        WHERE id = $1
          AND connection_id = $2
@@ -328,6 +341,11 @@ export class EntriesService {
     const entry = rows[0];
     const isExpired = this._isExpired(entry.diary_expires_at);
 
+    // Text entries have no media — always return null URLs.
+    if (entry.entry_type === 'text') {
+      return { ...this.toPublic(entry), media_url: null, thumbnail_url: null };
+    }
+
     // Diary thread: expired entries return tombstone (no media URL).
     // Memory Tree (bypassExpiry): always return the signed URL.
     if (isExpired && !bypassExpiry) {
@@ -338,7 +356,7 @@ export class EntriesService {
       };
     }
 
-    const mediaUrl = await this.storage.getSignedDownloadUrl(entry.media_key, 3600);
+    const mediaUrl = await this.storage.getSignedDownloadUrl(entry.media_key!, 3600);
     const thumbnailUrl =
       entry.entry_type === 'video' && entry.thumbnail_key
         ? await this.storage.getSignedDownloadUrl(entry.thumbnail_key, 3600).catch(() => null)
@@ -372,10 +390,11 @@ export class EntriesService {
        WHERE id = $2
          AND connection_id = $3
          AND deleted_at IS NULL
-       RETURNING id, connection_id, author_id, entry_type, media_key,
-                 thumbnail_key, duration_seconds, file_size_bytes,
+       RETURNING id, connection_id, author_id, entry_type, content,
+                 media_key, thumbnail_key, duration_seconds, file_size_bytes,
                  transcription, transcription_status, mood,
-                 is_starred, starred_at, play_count, recorded_at, created_at`,
+                 is_starred, starred_at, play_count, recorded_at, created_at,
+                 diary_expires_at, saved_to_moments, saved_to_moments_at`,
       [isStarred, entryId, connectionId],
     );
 
@@ -480,6 +499,40 @@ export class EntriesService {
     return { play_count: Number(rows[0].play_count) };
   }
 
+  // ── Save to Moments ────────────────────────────────────────────────────────
+
+  async saveToMoments(
+    _userId: string,
+    connectionId: string,
+    entryId: string,
+  ): Promise<DiaryEntry> {
+    const rows = await this.db.query<DbEntry[]>(
+      `UPDATE diary_entries
+       SET saved_to_moments    = true,
+           saved_to_moments_at = NOW(),
+           updated_at          = NOW()
+       WHERE id             = $1
+         AND connection_id  = $2
+         AND entry_type     = 'text'
+         AND deleted_at     IS NULL
+       RETURNING id, connection_id, author_id, entry_type, content,
+                 media_key, thumbnail_key, duration_seconds, file_size_bytes,
+                 transcription, transcription_status, mood,
+                 is_starred, starred_at, play_count, recorded_at, created_at,
+                 diary_expires_at, saved_to_moments, saved_to_moments_at`,
+      [entryId, connectionId],
+    );
+
+    if (!rows.length) {
+      throw new NotFoundException({
+        error: 'ENTRY_NOT_FOUND',
+        message: 'Text entry not found.',
+      });
+    }
+
+    return this.toPublic(rows[0]);
+  }
+
   // ── Rate limiting ──────────────────────────────────────────────────────────
 
   private async enforceRateLimit(
@@ -525,6 +578,7 @@ export class EntriesService {
       connection_id: entry.connection_id,
       author_id: entry.author_id,
       entry_type: entry.entry_type,
+      content: entry.content ?? null,
       duration_seconds: entry.duration_seconds,
       file_size_bytes: entry.file_size_bytes,
       transcription: entry.transcription,
@@ -537,6 +591,8 @@ export class EntriesService {
       created_at: entry.created_at,
       is_expired: this._isExpired(entry.diary_expires_at),
       diary_expires_at: entry.diary_expires_at,
+      saved_to_moments: entry.saved_to_moments ?? false,
+      saved_to_moments_at: entry.saved_to_moments_at ?? null,
     };
   }
 

@@ -78,6 +78,7 @@ interface MonthEntryRow {
   connection_id: string;
   author_id: string;
   entry_type: string;
+  content: string | null;
   duration_seconds: number | null;
   transcription: string | null;
   transcription_status: string;
@@ -87,6 +88,8 @@ interface MonthEntryRow {
   play_count: number;
   recorded_at: Date;
   created_at: Date;
+  saved_to_moments: boolean;
+  saved_to_moments_at: Date | null;
 }
 
 // ── MemoryTreeService ────────────────────────────────────────────────────────
@@ -156,7 +159,9 @@ export class MemoryTreeService {
          COUNT(*) FILTER (WHERE mood = 'missing')::text             AS mood_missing,
          COUNT(*) FILTER (WHERE mood = 'excited')::text             AS mood_excited
        FROM diary_entries
-       WHERE connection_id = $1 AND deleted_at IS NULL
+       WHERE connection_id = $1
+         AND deleted_at IS NULL
+         AND (entry_type != 'text' OR saved_to_moments = true)
        GROUP BY year_month
        ORDER BY year_month ASC`,
       [connectionId],
@@ -278,11 +283,13 @@ export class MemoryTreeService {
 
     const entries = await this.db.query<MonthEntryRow[]>(
       `SELECT id, connection_id, author_id, entry_type,
-              duration_seconds, transcription, transcription_status,
-              mood, is_starred, starred_at, play_count, recorded_at, created_at
+              content, duration_seconds, transcription, transcription_status,
+              mood, is_starred, starred_at, play_count, recorded_at, created_at,
+              saved_to_moments, saved_to_moments_at
        FROM diary_entries
        WHERE connection_id = $1
          AND deleted_at IS NULL
+         AND (entry_type != 'text' OR saved_to_moments = true)
          AND recorded_at AT TIME ZONE 'Asia/Kolkata' >= $2
          AND recorded_at AT TIME ZONE 'Asia/Kolkata' < $3
          ${filterSql}
@@ -290,7 +297,7 @@ export class MemoryTreeService {
       [connectionId, startDate, nextMonth],
     );
 
-    // Compute stats from the full (unfiltered) set for the month header
+    // Compute stats from the moments-eligible set for the month header
     const allEntries = await this.db.query<AggRow[]>(
       `SELECT
          COUNT(*)::text                                         AS entry_count,
@@ -305,6 +312,7 @@ export class MemoryTreeService {
        FROM diary_entries
        WHERE connection_id = $1
          AND deleted_at IS NULL
+         AND (entry_type != 'text' OR saved_to_moments = true)
          AND recorded_at AT TIME ZONE 'Asia/Kolkata' >= $2
          AND recorded_at AT TIME ZONE 'Asia/Kolkata' < $3`,
       [connectionId, startDate, nextMonth],
