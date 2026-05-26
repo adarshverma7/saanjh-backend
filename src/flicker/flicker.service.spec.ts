@@ -61,16 +61,18 @@ describe('FlickerService', () => {
         .mockResolvedValueOnce([CONN_ROW])              // find connection
         .mockResolvedValueOnce([makeFlicker()])         // INSERT flicker RETURNING
         .mockResolvedValueOnce([])                      // mutual check → none found
+        .mockResolvedValueOnce([])                      // partner flickered today → no
         .mockResolvedValueOnce([{ name: 'Adarsh' }]);  // sender name
     }
 
     function setupMutual() {
       mockDb.query
-        .mockResolvedValueOnce([{ count: '1' }])           // rate limit
-        .mockResolvedValueOnce([CONN_ROW])                 // find connection
-        .mockResolvedValueOnce([makeFlicker()])             // INSERT flicker
-        .mockResolvedValueOnce([{ id: 'partner-flicker-id' }]) // mutual found!
-        .mockResolvedValueOnce([]);                        // UPDATE both mutual
+        .mockResolvedValueOnce([{ count: '1' }])                    // rate limit
+        .mockResolvedValueOnce([CONN_ROW])                          // find connection
+        .mockResolvedValueOnce([makeFlicker()])                     // INSERT flicker
+        .mockResolvedValueOnce([{ id: 'partner-flicker-id' }])      // mutual found!
+        .mockResolvedValueOnce([{ id: 'partner-flicker-id' }])      // partner flickered today → yes
+        .mockResolvedValueOnce([]);                                 // UPDATE both mutual
     }
 
     it('returns flicker_id, is_mutual=false, and window_closes_at on non-mutual send', async () => {
@@ -192,7 +194,8 @@ describe('FlickerService', () => {
         .mockResolvedValueOnce([{ count: '1' }])
         .mockResolvedValueOnce([CONN_ROW])  // user_a = SENDER_ID, user_b = RECEIVER_ID
         .mockResolvedValueOnce([makeFlicker({ sender_id: RECEIVER_ID, receiver_id: SENDER_ID })])
-        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])          // mutual check → none
+        .mockResolvedValueOnce([])          // partner flickered today → no
         .mockResolvedValueOnce([{ name: 'Partner' }]);
 
       await service.sendFlicker(RECEIVER_ID, CONN_ID);
