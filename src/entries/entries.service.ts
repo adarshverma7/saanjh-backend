@@ -562,7 +562,6 @@ export class EntriesService {
       });
     }
 
-    await this.memoryTreeService.invalidateCache(connectionId);
     return this.toPublic(rows[0]);
   }
 
