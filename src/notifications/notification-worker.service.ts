@@ -46,6 +46,57 @@ export class NotificationWorkerService {
     }
   }
 
+  @OnEvent('entry.created', { async: true })
+  async onEntryCreated(payload: {
+    entryId: string;
+    connectionId: string;
+    authorId: string;
+    entryType: string;
+    durationSeconds: number | null;
+  }): Promise<void> {
+    try {
+      const rows = await this.db.query<{
+        user_a_id: string;
+        user_b_id: string;
+        author_name: string | null;
+      }[]>(
+        `SELECT dc.user_a_id, dc.user_b_id, u.name AS author_name
+         FROM diary_connections dc
+         JOIN users u ON u.id = $2
+         WHERE dc.id = $1`,
+        [payload.connectionId, payload.authorId],
+      );
+
+      if (!rows.length) return;
+
+      const { user_a_id, user_b_id, author_name } = rows[0];
+      const partnerId = user_a_id === payload.authorId ? user_b_id : user_a_id;
+      const senderName = author_name ?? 'Someone';
+      const duration = payload.durationSeconds ?? 0;
+
+      const isVideo = payload.entryType === 'video';
+      const title = isVideo
+        ? `${senderName} left you a video`
+        : `${senderName} left you a voice note`;
+      const body = `${duration}s — tap to listen`;
+
+      await this.notificationsService.createNotification(
+        partnerId,
+        'new_entry',
+        title,
+        body,
+        {
+          type: 'entry',
+          diary_id: payload.connectionId,
+          entry_id: payload.entryId,
+          entry_type: payload.entryType,
+        },
+      );
+    } catch (err: unknown) {
+      this.logger.error('Failed to send new_entry notification', err);
+    }
+  }
+
   @OnEvent('flicker.mutual', { async: true })
   async onFlickerMutual(payload: {
     connectionId: string;
