@@ -12,6 +12,8 @@ export interface FlickerResult {
   is_mutual: boolean;
   mutual_at: Date | null;
   window_closes_at: Date;
+  /** True if the partner has already flickered today, regardless of the 5-min window. */
+  partner_flickered_today: boolean;
 }
 
 export interface FlickerStatus {
@@ -128,6 +130,18 @@ export class FlickerService {
       [receiverId, senderId, connectionId, MUTUAL_WINDOW_SECS],
     );
 
+    // Did the partner flicker us at any point today (regardless of mutual window)?
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const partnerTodayRows = await this.db.query<{ id: string }[]>(
+      `SELECT id FROM flicker_events
+       WHERE sender_id = $1 AND receiver_id = $2
+         AND connection_id = $3 AND sent_at >= $4
+       LIMIT 1`,
+      [receiverId, senderId, connectionId, startOfDay],
+    );
+    const partnerFlickeredToday = partnerTodayRows.length > 0;
+
     if (mutualRows.length) {
       // ── Mutual reveal ──────────────────────────────────────────────────────
       const mutualAt = new Date();
@@ -172,6 +186,7 @@ export class FlickerService {
         is_mutual: true,
         mutual_at: mutualAt,
         window_closes_at: windowClosesAt,
+        partner_flickered_today: true,
       };
     }
 
@@ -210,6 +225,7 @@ export class FlickerService {
       is_mutual: false,
       mutual_at: null,
       window_closes_at: windowClosesAt,
+      partner_flickered_today: partnerFlickeredToday,
     };
   }
 
@@ -260,14 +276,22 @@ export class FlickerService {
     const myLast = myRows[0] ?? null;
     const partnerLast = partnerRows[0] ?? null;
 
-    // Is there an active mutual window?
-    const now = Date.now();
-    const isMutual = myLast?.is_mutual ?? false;
+    const nowMs = Date.now();
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
 
+    // "Mutual today" means both users have flickered at any point today.
+    // The DB is_mutual flag only marks the 5-min real-time window — don't use it
+    // for the daily mutual display state.
+    const myFlickeredToday = myLast && new Date(myLast.sent_at) >= startOfDay;
+    const partnerFlickeredToday = partnerLast && new Date(partnerLast.sent_at) >= startOfDay;
+    const isMutual = !!(myFlickeredToday && partnerFlickeredToday);
+
+    // Active mutual-reveal window: only relevant if we sent recently but haven't become mutual yet.
     let windowClosesAt: Date | null = null;
     if (myLast && !isMutual) {
       const windowEnd = new Date(myLast.sent_at).getTime() + MUTUAL_WINDOW_SECS * 1000;
-      if (windowEnd > now) {
+      if (windowEnd > nowMs) {
         windowClosesAt = new Date(windowEnd);
       }
     }
