@@ -125,6 +125,21 @@ export class EntriesController {
   }
 
   /**
+   * PATCH /v1/connections/:id/entries/:entryId/save-to-moments
+   * Marks a text message as intentionally saved to the Memory Tree.
+   * Audio/video entries appear automatically; text only appears when explicitly saved.
+   */
+  @Patch(':entryId/save-to-moments')
+  @HttpCode(HttpStatus.OK)
+  saveToMoments(
+    @CurrentUser() user: RequestUser,
+    @Param('id') connectionId: string,
+    @Param('entryId') entryId: string,
+  ) {
+    return this.entriesService.saveToMoments(user.id, connectionId, entryId);
+  }
+
+  /**
    * DELETE /v1/connections/:id/entries/:entryId
    * Soft-deletes only — media retained in R2 for 90 days.
    * Only the author can delete. Voice memories are never immediately destroyed.

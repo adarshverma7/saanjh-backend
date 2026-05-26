@@ -74,11 +74,18 @@ export class NotificationWorkerService {
       const senderName = author_name ?? 'Someone';
       const duration = payload.durationSeconds ?? 0;
 
-      const isVideo = payload.entryType === 'video';
-      const title = isVideo
-        ? `${senderName} left you a video`
-        : `${senderName} left you a voice note`;
-      const body = `${duration}s — tap to listen`;
+      let title: string;
+      let body: string;
+      if (payload.entryType === 'text') {
+        title = `${senderName} sent you a message`;
+        body = 'Tap to read';
+      } else if (payload.entryType === 'video') {
+        title = `${senderName} left you a video`;
+        body = `${duration}s — tap to watch`;
+      } else {
+        title = `${senderName} left you a voice note`;
+        body = `${duration}s — tap to listen`;
+      }
 
       await this.notificationsService.createNotification(
         partnerId,
