@@ -200,6 +200,7 @@ export class EntriesService {
       connectionId,
       authorId: userId,
       entryType: dto.entry_type,
+      durationSeconds: dto.duration_seconds ?? null,
     });
 
     // ── 7. Audit log ──────────────────────────────────────────────────────────
