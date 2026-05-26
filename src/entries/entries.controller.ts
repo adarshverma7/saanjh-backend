@@ -140,6 +140,20 @@ export class EntriesController {
   }
 
   /**
+   * DELETE /v1/connections/:id/entries/:entryId/save-to-moments
+   * Removes a text message from the Memory Tree (sets saved_to_moments = false).
+   */
+  @Delete(':entryId/save-to-moments')
+  @HttpCode(HttpStatus.OK)
+  removeFromMoments(
+    @CurrentUser() user: RequestUser,
+    @Param('id') connectionId: string,
+    @Param('entryId') entryId: string,
+  ) {
+    return this.entriesService.removeFromMoments(user.id, connectionId, entryId);
+  }
+
+  /**
    * DELETE /v1/connections/:id/entries/:entryId
    * Soft-deletes only — media retained in R2 for 90 days.
    * Only the author can delete. Voice memories are never immediately destroyed.
