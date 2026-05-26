@@ -533,6 +533,39 @@ export class EntriesService {
     return this.toPublic(rows[0]);
   }
 
+  async removeFromMoments(
+    _userId: string,
+    connectionId: string,
+    entryId: string,
+  ): Promise<DiaryEntry> {
+    const rows = await this.db.query<DbEntry[]>(
+      `UPDATE diary_entries
+       SET saved_to_moments    = false,
+           saved_to_moments_at = NULL,
+           updated_at          = NOW()
+       WHERE id             = $1
+         AND connection_id  = $2
+         AND entry_type     = 'text'
+         AND deleted_at     IS NULL
+       RETURNING id, connection_id, author_id, entry_type, content,
+                 media_key, thumbnail_key, duration_seconds, file_size_bytes,
+                 transcription, transcription_status, mood,
+                 is_starred, starred_at, play_count, recorded_at, created_at,
+                 diary_expires_at, saved_to_moments, saved_to_moments_at`,
+      [entryId, connectionId],
+    );
+
+    if (!rows.length) {
+      throw new NotFoundException({
+        error: 'ENTRY_NOT_FOUND',
+        message: 'Text entry not found.',
+      });
+    }
+
+    await this.memoryTreeService.invalidateCache(connectionId);
+    return this.toPublic(rows[0]);
+  }
+
   // ── Rate limiting ──────────────────────────────────────────────────────────
 
   private async enforceRateLimit(
