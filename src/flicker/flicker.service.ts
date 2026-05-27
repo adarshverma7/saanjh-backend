@@ -21,6 +21,8 @@ export interface FlickerStatus {
   partner_last_flicker_at: Date | null;
   is_mutual: boolean;
   window_closes_at: Date | null;
+  /** Authoritative relationship state for the current calendar day. */
+  current_state: 'idle' | 'i_sent' | 'they_sent' | 'mutual';
 }
 
 export interface FlickerHistoryItem {
@@ -296,11 +298,18 @@ export class FlickerService {
       }
     }
 
+    const currentState: FlickerStatus['current_state'] =
+      isMutual              ? 'mutual'
+      : myFlickeredToday    ? 'i_sent'
+      : partnerFlickeredToday ? 'they_sent'
+      : 'idle';
+
     const data: FlickerStatus = {
       my_last_flicker_at: myLast ? new Date(myLast.sent_at) : null,
       partner_last_flicker_at: partnerLast ? new Date(partnerLast.sent_at) : null,
       is_mutual: isMutual,
       window_closes_at: windowClosesAt,
+      current_state: currentState,
     };
 
     this.statusCache.set(cacheKey, { data, cachedAt: Date.now() });
