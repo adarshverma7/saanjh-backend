@@ -224,6 +224,8 @@ describe('FlickerService', () => {
       expect(status.my_last_flicker_at?.toISOString()).toBe(sentAt.toISOString());
       expect(status.partner_last_flicker_at).toBeNull();
       expect(status.is_mutual).toBe(false);
+      // sentAt is in the past (not today) so state is idle
+      expect(status.current_state).toBe('idle');
     });
 
     it('returns is_mutual=true when latest flicker is mutual', async () => {
@@ -234,6 +236,7 @@ describe('FlickerService', () => {
 
       const status = await service.getFlickerStatus(SENDER_ID, CONN_ID);
       expect(status.is_mutual).toBe(true);
+      expect(status.current_state).toBe('mutual');
     });
 
     it('returns cached result within 30 seconds', async () => {
