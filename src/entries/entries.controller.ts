@@ -17,6 +17,8 @@ import { UploadUrlDto } from './dto/upload-url.dto';
 import { CreateEntryDto } from './dto/create-entry.dto';
 import { ListEntriesDto } from './dto/list-entries.dto';
 import { StarEntryDto } from './dto/star-entry.dto';
+import { RequestUploadDto } from './dto/request-upload.dto';
+import { ConfirmUploadDto } from './dto/confirm-upload.dto';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { ConnectionMemberGuard } from '../guards/connection-member.guard';
 import { CurrentUser } from '../decorators/current-user.decorator';
@@ -32,9 +34,38 @@ export class EntriesController {
   constructor(private readonly entriesService: EntriesService) {}
 
   /**
+   * POST /v1/connections/:id/entries/request-upload
+   * Telegram-style step 1: pre-creates a pending DB row and returns a 15-min
+   * presigned PUT URL. Flutter uploads binary directly to B2.
+   */
+  @Post('request-upload')
+  @HttpCode(HttpStatus.OK)
+  requestUpload(
+    @CurrentUser() user: RequestUser,
+    @Param('id') connectionId: string,
+    @Body() dto: RequestUploadDto,
+  ) {
+    return this.entriesService.requestUpload(user.id, connectionId, dto);
+  }
+
+  /**
+   * POST /v1/connections/:id/entries/confirm
+   * Telegram-style step 2: verifies the B2 upload, marks entry completed,
+   * and pushes an SSE new_entry event with a signed URL to the partner.
+   */
+  @Post('confirm')
+  @HttpCode(HttpStatus.OK)
+  confirmUpload(
+    @CurrentUser() user: RequestUser,
+    @Param('id') connectionId: string,
+    @Body() dto: ConfirmUploadDto,
+  ) {
+    return this.entriesService.confirmUpload(user.id, connectionId, dto);
+  }
+
+  /**
    * POST /v1/connections/:id/entries/upload-url
-   * Step 1 of 2. Returns a pre-signed R2 PUT URL (15 min) for direct upload.
-   * Flutter uploads binary directly to R2 — the API server never handles media.
+   * Legacy pre-signed URL endpoint — kept for backward compatibility.
    */
   @Post('upload-url')
   @HttpCode(HttpStatus.OK)
@@ -50,8 +81,7 @@ export class EntriesController {
 
   /**
    * POST /v1/connections/:id/entries
-   * Step 2 of 2. Verifies R2 upload completed, creates the DB row.
-   * Triggers: streak update, cache invalidation, transcription + notification events.
+   * Creates a text entry, or legacy voice/video via the old two-step flow.
    */
   @Post()
   createEntry(

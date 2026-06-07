@@ -13,6 +13,7 @@ import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { StorageService } from '../shared/storage/storage.service';
 import { StreaksService, toISTDate } from '../streaks/streaks.service';
+import { EventsService } from '../flicker/events.service';
 import {
   encodeCursor,
   decodeCursor,
@@ -20,6 +21,8 @@ import {
 import type { UploadUrlDto } from './dto/upload-url.dto';
 import type { CreateEntryDto } from './dto/create-entry.dto';
 import type { ListEntriesDto } from './dto/list-entries.dto';
+import type { RequestUploadDto } from './dto/request-upload.dto';
+import type { ConfirmUploadDto } from './dto/confirm-upload.dto';
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -27,6 +30,13 @@ export interface UploadUrlResult {
   media_key: string;
   entry_id: string;
   upload_url: string;
+}
+
+export interface RequestUploadResult {
+  entry_id: string;
+  media_key: string;
+  upload_url: string;
+  expires_at: string; // ISO timestamp — Flutter must PUT before this time
 }
 
 export interface DiaryEntry {
@@ -84,6 +94,7 @@ export class EntriesService {
     private readonly eventEmitter: EventEmitter2,
     private readonly config: ConfigService,
     private readonly streaksService: StreaksService,
+    private readonly eventsService: EventsService,
   ) {}
 
   // ── Upload URL ─────────────────────────────────────────────────────────────
@@ -108,6 +119,196 @@ export class EntriesService {
 
     const uploadUrl = await this.storage.getSignedUploadUrl(mediaKey);
     return { media_key: mediaKey, entry_id: entryId, upload_url: uploadUrl };
+  }
+
+  // ── Request Upload (Telegram-style step 1) ────────────────────────────────
+  // Pre-creates a pending DB row and returns a presigned PUT URL.
+  // Flutter uploads directly to B2, then calls confirmUpload.
+
+  async requestUpload(
+    userId: string,
+    connectionId: string,
+    dto: RequestUploadDto,
+  ): Promise<RequestUploadResult> {
+    // Rate limit: 30 uploads per connection per IST calendar day
+    const istDate = toISTDate(new Date());
+    const rlKey = `upload:${connectionId}:${istDate}`;
+    await this.enforceRateLimit(rlKey, 86400, 30, 'UPLOAD_RATE_LIMIT');
+
+    const entryId = randomUUID();
+    const mediaKey =
+      dto.entry_type === 'voice'
+        ? StorageService.voiceKey(connectionId, entryId)
+        : StorageService.videoKey(connectionId, entryId);
+
+    // Pre-create the pending entry so the ID is stable end-to-end
+    await this.db.query(
+      `INSERT INTO diary_entries
+         (id, connection_id, author_id, entry_type, media_key, upload_status)
+       VALUES ($1, $2, $3, $4, $5, 'pending')`,
+      [entryId, connectionId, userId, dto.entry_type, mediaKey],
+    );
+
+    const uploadUrl = await this.storage.getSignedUploadUrl(mediaKey);
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+
+    return { entry_id: entryId, media_key: mediaKey, upload_url: uploadUrl, expires_at: expiresAt };
+  }
+
+  // ── Confirm Upload (Telegram-style step 2) ────────────────────────────────
+  // Verifies the file landed in B2, marks the row completed,
+  // then pushes an SSE new_entry event with a signed URL to the partner.
+
+  async confirmUpload(
+    userId: string,
+    connectionId: string,
+    dto: ConfirmUploadDto,
+  ): Promise<DiaryEntry> {
+    // Fetch the pending row — must belong to this connection and this author
+    const rows = await this.db.query<{
+      id: string;
+      author_id: string;
+      media_key: string;
+      thumbnail_key: string | null;
+      upload_status: string;
+      entry_type: string;
+    }[]>(
+      `SELECT id, author_id, media_key, thumbnail_key, upload_status, entry_type
+       FROM diary_entries
+       WHERE id = $1 AND connection_id = $2 AND deleted_at IS NULL`,
+      [dto.entry_id, connectionId],
+    );
+
+    if (!rows.length) {
+      throw new NotFoundException({
+        error: 'ENTRY_NOT_FOUND',
+        message: 'Pending entry not found.',
+      });
+    }
+
+    const pending = rows[0];
+
+    if (pending.author_id !== userId) {
+      throw new ForbiddenException({
+        error: 'NOT_ENTRY_AUTHOR',
+        message: 'Only the author can confirm an upload.',
+      });
+    }
+
+    if (pending.upload_status !== 'pending') {
+      throw new BadRequestException({
+        error: 'ALREADY_CONFIRMED',
+        message: 'Entry has already been confirmed or failed.',
+      });
+    }
+
+    // Verify file landed in B2 (eventual consistency — up to 3 retries)
+    let exists = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      exists = await this.storage.objectExists(pending.media_key);
+      if (exists) break;
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 600));
+    }
+
+    if (!exists) {
+      await this.db.query(
+        `UPDATE diary_entries SET upload_status = 'failed', updated_at = NOW() WHERE id = $1`,
+        [dto.entry_id],
+      );
+      throw new BadRequestException({
+        error: 'MEDIA_NOT_UPLOADED',
+        message: 'Media file not found in storage. Upload may have failed.',
+      });
+    }
+
+    const recordedAt = dto.recorded_at ? new Date(dto.recorded_at) : new Date();
+
+    const updated = await this.db.query<DbEntry[]>(
+      `UPDATE diary_entries
+       SET upload_status    = 'completed',
+           duration_seconds = $1,
+           mood             = $2,
+           recorded_at      = $3,
+           diary_expires_at = $3 + INTERVAL '${DIARY_EXPIRY_HOURS} hours',
+           updated_at       = NOW()
+       WHERE id = $4
+       RETURNING id, connection_id, author_id, entry_type, content,
+                 media_key, duration_seconds, file_size_bytes, thumbnail_key,
+                 transcription, transcription_status, mood,
+                 is_starred, starred_at, play_count, recorded_at, created_at,
+                 diary_expires_at, saved_to_moments, saved_to_moments_at`,
+      [dto.duration_seconds, dto.mood ?? null, recordedAt, dto.entry_id],
+    );
+
+    const entry = updated[0];
+
+    // Update connection counters
+    await this.db.query(
+      `UPDATE diary_connections
+       SET last_entry_at = NOW(),
+           total_entry_count = total_entry_count + 1,
+           updated_at = NOW()
+       WHERE id = $1`,
+      [connectionId],
+    );
+
+    // Streak update
+    await this.streaksService.onNewEntry(connectionId, recordedAt).catch((err: unknown) => {
+      this.logger.error('Streak update failed for entry', err);
+    });
+
+    // Invalidate Memory Tree cache
+    await this.db
+      .query(`DELETE FROM memory_tree_cache WHERE connection_id = $1`, [connectionId])
+      .catch(() => {});
+
+    // Push SSE new_entry to partner with a pre-generated signed URL
+    const partnerRows = await this.db.query<{ user_a_id: string; user_b_id: string }[]>(
+      `SELECT user_a_id, user_b_id FROM diary_connections WHERE id = $1`,
+      [connectionId],
+    );
+
+    if (partnerRows.length) {
+      const { user_a_id, user_b_id } = partnerRows[0];
+      const partnerId = user_a_id === userId ? user_b_id : user_a_id;
+
+      try {
+        const mediaUrl = await this.storage.getSignedDownloadUrl(entry.media_key!, 3600);
+        const thumbnailUrl =
+          entry.entry_type === 'video' && entry.thumbnail_key
+            ? await this.storage.getSignedDownloadUrl(entry.thumbnail_key, 3600).catch(() => null)
+            : null;
+        const urlExpiresAt = new Date(Date.now() + 3600 * 1000).toISOString();
+
+        this.eventsService.push(partnerId, connectionId, {
+          type: 'new_entry',
+          entry_id: entry.id,
+          author_id: userId,
+          entry_type: entry.entry_type,
+          duration_seconds: entry.duration_seconds,
+          media_url: mediaUrl,
+          thumbnail_url: thumbnailUrl,
+          url_expires_at: urlExpiresAt,
+        });
+      } catch (err: unknown) {
+        // SSE push failure must never block the response
+        this.logger.error('SSE new_entry push failed', err);
+      }
+    }
+
+    // Emit events for async workers (transcription, push notification)
+    this.eventEmitter.emit('entry.created', {
+      entryId: entry.id,
+      mediaKey: entry.media_key,
+      connectionId,
+      authorId: userId,
+      entryType: entry.entry_type,
+      durationSeconds: dto.duration_seconds ?? null,
+    });
+
+    await this.writeAuditLog(userId, 'entry.created', 'diary_entry', entry.id);
+
+    return this.toPublic(entry);
   }
 
   // ── Create Entry ───────────────────────────────────────────────────────────
@@ -233,7 +434,7 @@ export class EntriesService {
 
     // Build query dynamically
     const params: unknown[] = [connectionId];
-    let where = `WHERE connection_id = $1 AND deleted_at IS NULL`;
+    let where = `WHERE connection_id = $1 AND deleted_at IS NULL AND upload_status = 'completed'`;
 
     // Type filter (safe to embed — validated by DTO)
     if (filter === 'voice') where += ` AND entry_type = 'voice'`;

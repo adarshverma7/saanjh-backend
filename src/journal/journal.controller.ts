@@ -16,6 +16,7 @@ import { JournalUploadUrlDto } from './dto/journal-upload-url.dto';
 import { CreateJournalEntryDto } from './dto/create-journal-entry.dto';
 import { ListJournalDto } from './dto/list-journal.dto';
 import { StarJournalDto } from './dto/star-journal.dto';
+import { JournalConfirmUploadDto } from './dto/journal-confirm-upload.dto';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { CurrentUser } from '../decorators/current-user.decorator';
 import type { RequestUser } from '../auth/strategies/jwt.strategy';
@@ -41,9 +42,35 @@ export class JournalController {
   constructor(private readonly journalService: JournalService) {}
 
   /**
+   * POST /v1/journal/request-upload
+   * Telegram-style step 1: pre-creates a pending row and returns a 15-min
+   * presigned PUT URL. Flutter uploads directly to B2.
+   */
+  @Post('request-upload')
+  @HttpCode(HttpStatus.OK)
+  requestUpload(
+    @CurrentUser() user: RequestUser,
+    @Body('entry_type') entryType: 'voice' | 'video',
+  ) {
+    return this.journalService.requestUpload(user.id, entryType);
+  }
+
+  /**
+   * POST /v1/journal/confirm
+   * Telegram-style step 2: verifies the B2 upload and marks the entry completed.
+   */
+  @Post('confirm')
+  @HttpCode(HttpStatus.OK)
+  confirmUpload(
+    @CurrentUser() user: RequestUser,
+    @Body() dto: JournalConfirmUploadDto,
+  ) {
+    return this.journalService.confirmUpload(user.id, dto);
+  }
+
+  /**
    * POST /v1/journal/upload-url
-   * Returns a pre-signed R2 PUT URL for direct Flutter → R2 upload.
-   * No 20-second limit here — personal recordings can be up to 5 minutes.
+   * Legacy pre-signed URL endpoint — kept for backward compatibility.
    */
   @Post('upload-url')
   @HttpCode(HttpStatus.OK)
@@ -56,8 +83,7 @@ export class JournalController {
 
   /**
    * POST /v1/journal/entries
-   * Creates a journal entry. For voice/video: upload media first, then call this.
-   * For text: pass text_content directly, no media_key needed.
+   * Creates a journal entry (text) or legacy voice/video via old flow.
    */
   @Post('entries')
   createEntry(

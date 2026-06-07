@@ -108,6 +108,34 @@ export class ScheduledTasksService {
   }
 
   /**
+   * Mark pending uploads older than 2 hours as failed.
+   * Prevents ghost rows from clogging the diary thread if Flutter crashed mid-upload.
+   * Runs at 3 AM IST (21:30 UTC).
+   */
+  @Cron('30 21 * * *', { timeZone: 'Asia/Kolkata' })
+  async cleanupStalePendingUploads(): Promise<void> {
+    try {
+      const diaryResult = await this.db.query<{ rowCount: number }[]>(
+        `UPDATE diary_entries
+         SET upload_status = 'failed', updated_at = NOW()
+         WHERE upload_status = 'pending'
+           AND created_at < NOW() - INTERVAL '2 hours'`,
+      );
+      const journalResult = await this.db.query<{ rowCount: number }[]>(
+        `UPDATE personal_journal_entries
+         SET upload_status = 'failed'
+         WHERE upload_status = 'pending'
+           AND created_at < NOW() - INTERVAL '2 hours'`,
+      );
+      this.logger.log(
+        `Stale pending uploads expired — diary: ${JSON.stringify(diaryResult)}, journal: ${JSON.stringify(journalResult)}`,
+      );
+    } catch (err: unknown) {
+      this.logger.error('cleanupStalePendingUploads failed', err);
+    }
+  }
+
+  /**
    * Queue hard deletion for accounts that have been soft-deleted for 30+ days.
    * Gives users a 30-day grace period to cancel their deletion request by logging back in.
    */

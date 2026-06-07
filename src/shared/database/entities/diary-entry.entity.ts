@@ -36,6 +36,9 @@ export class DiaryEntry {
   @Column({ type: 'text', nullable: true })
   transcription: string | null;
 
+  @Column({ type: 'varchar', length: 20, default: 'completed' })
+  upload_status: string; // 'pending' | 'completed' | 'failed'
+
   @Column({ type: 'varchar', length: 20, default: 'pending' })
   transcription_status: string; // 'pending' | 'processing' | 'done' | 'failed' | 'skipped'
 

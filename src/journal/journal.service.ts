@@ -14,6 +14,7 @@ import {
 import type { JournalUploadUrlDto } from './dto/journal-upload-url.dto';
 import type { CreateJournalEntryDto } from './dto/create-journal-entry.dto';
 import type { ListJournalDto } from './dto/list-journal.dto';
+import type { JournalConfirmUploadDto } from './dto/journal-confirm-upload.dto';
 
 // ── Public interfaces ────────────────────────────────────────────────────────
 
@@ -43,6 +44,13 @@ export interface UploadUrlResult {
   upload_url: string;
   media_key: string;
   expires_in: number;
+}
+
+export interface JournalRequestUploadResult {
+  entry_id: string;
+  media_key: string;
+  upload_url: string;
+  expires_at: string;
 }
 
 // ── Internal DB row ──────────────────────────────────────────────────────────
@@ -86,6 +94,96 @@ export class JournalService {
     const uploadUrl = await this.storage.getSignedUploadUrl(mediaKey);
 
     return { upload_url: uploadUrl, media_key: mediaKey, expires_in: 900 };
+  }
+
+  // ── Request Upload (Telegram-style step 1) ────────────────────────────────
+
+  async requestUpload(
+    userId: string,
+    entry_type: 'voice' | 'video',
+  ): Promise<JournalRequestUploadResult> {
+    const entryId = randomUUID();
+    const mediaKey =
+      entry_type === 'video'
+        ? StorageService.journalKey(userId, entryId).replace('.m4a', '.mp4')
+        : StorageService.journalKey(userId, entryId);
+
+    // Pre-create pending row — upload_status defaults to 'pending' in the INSERT
+    await this.db.query(
+      `INSERT INTO personal_journal_entries
+         (id, user_id, entry_type, media_key, upload_status)
+       VALUES ($1, $2, $3, $4, 'pending')`,
+      [entryId, userId, entry_type, mediaKey],
+    );
+
+    const uploadUrl = await this.storage.getSignedUploadUrl(mediaKey);
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+
+    return { entry_id: entryId, media_key: mediaKey, upload_url: uploadUrl, expires_at: expiresAt };
+  }
+
+  // ── Confirm Upload (Telegram-style step 2) ────────────────────────────────
+
+  async confirmUpload(
+    userId: string,
+    dto: JournalConfirmUploadDto,
+  ): Promise<JournalEntry> {
+    // SECURITY: user_id = $2 ensures only the owner can confirm
+    const rows = await this.db.query<{
+      id: string;
+      user_id: string;
+      media_key: string;
+      upload_status: string;
+    }[]>(
+      `SELECT id, user_id, media_key, upload_status
+       FROM personal_journal_entries
+       WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+      [dto.entry_id, userId],
+    );
+
+    if (!rows.length) {
+      throw new NotFoundException({
+        error: 'JOURNAL_ENTRY_NOT_FOUND',
+        message: 'Pending journal entry not found.',
+      });
+    }
+
+    const pending = rows[0];
+
+    if (pending.upload_status !== 'pending') {
+      throw new BadRequestException({
+        error: 'ALREADY_CONFIRMED',
+        message: 'Entry has already been confirmed or failed.',
+      });
+    }
+
+    const exists = await this.storage.objectExists(pending.media_key);
+    if (!exists) {
+      await this.db.query(
+        `UPDATE personal_journal_entries SET upload_status = 'failed' WHERE id = $1`,
+        [dto.entry_id],
+      );
+      throw new BadRequestException({
+        error: 'MEDIA_NOT_UPLOADED',
+        message: 'Media file not found in storage. Upload may have failed.',
+      });
+    }
+
+    const recordedAt = dto.recorded_at ? new Date(dto.recorded_at) : new Date();
+
+    const updated = await this.db.query<DbEntry[]>(
+      `UPDATE personal_journal_entries
+       SET upload_status    = 'completed',
+           duration_seconds = $1,
+           mood             = $2,
+           recorded_at      = $3
+       WHERE id = $4
+       RETURNING id, user_id, entry_type, text_content, duration_seconds,
+                 mood, is_starred, recorded_at, created_at`,
+      [dto.duration_seconds ?? null, dto.mood ?? null, recordedAt, dto.entry_id],
+    );
+
+    return this.toPublic(updated[0]);
   }
 
   // ── Create Entry ───────────────────────────────────────────────────────────
@@ -151,7 +249,7 @@ export class JournalService {
 
     // SECURITY: user_id = $1 is always the first param and always present
     const params: unknown[] = [userId];
-    let where = `WHERE user_id = $1 AND deleted_at IS NULL`;
+    let where = `WHERE user_id = $1 AND deleted_at IS NULL AND upload_status = 'completed'`;
 
     if (filter === 'voice')   where += ` AND entry_type = 'voice'`;
     if (filter === 'video')   where += ` AND entry_type = 'video'`;

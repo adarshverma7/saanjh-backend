@@ -7,7 +7,16 @@ import { map, finalize } from 'rxjs/operators';
 export type SaanjhEvent =
   | { type: 'flicker_received'; flicker_id: string; sender_name: string; sent_at: string }
   | { type: 'mutual_reveal'; mutual_at: string }
-  | { type: 'new_entry'; entry_id: string; author_id: string }
+  | {
+      type: 'new_entry';
+      entry_id: string;
+      author_id: string;
+      entry_type: string;
+      duration_seconds: number | null;
+      media_url: string | null;         // null for text entries
+      thumbnail_url: string | null;
+      url_expires_at: string | null;    // null for text entries
+    }
   | { type: 'transcription_ready'; entry_id: string }
   | { type: 'heartbeat' };
 

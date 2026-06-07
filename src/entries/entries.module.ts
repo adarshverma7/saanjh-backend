@@ -3,13 +3,15 @@ import { EntriesController } from './entries.controller';
 import { EntriesService } from './entries.service';
 import { StorageModule } from '../shared/storage/storage.module';
 import { StreaksModule } from '../streaks/streaks.module';
+import { FlickerModule } from '../flicker/flicker.module';
 
 @Module({
   imports: [
     StorageModule,
-    // StreaksService is injected into EntriesService.
-    // Each new diary entry calls streaksService.onNewEntry() to update the streak.
     StreaksModule,
+    // EventsService (from FlickerModule) is injected into EntriesService
+    // to push SSE new_entry events to the partner when an upload is confirmed.
+    FlickerModule,
   ],
   controllers: [EntriesController],
   providers: [EntriesService],

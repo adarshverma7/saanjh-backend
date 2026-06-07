@@ -370,15 +370,20 @@ export class FlickerService {
   // ── SSE event bridges (from EventEmitter) ────────────────────────────────────
 
   /**
-   * When EntriesService creates a new diary entry, push real-time SSE to the partner.
-   * The author already knows they recorded it — only the partner needs the notification.
+   * Push real-time SSE to the partner when a TEXT diary entry is created.
+   * Voice/video entries get SSE pushed directly in EntriesService.confirmUpload
+   * (with a pre-signed media URL). Text entries have no media so we handle them here.
    */
   @OnEvent('entry.created')
   async onEntryCreated(payload: {
     entryId: string;
     connectionId: string;
     authorId: string;
+    entryType: string;
   }): Promise<void> {
+    // Voice/video SSE (with signed URL) is pushed in confirmUpload — skip here.
+    if (payload.entryType !== 'text') return;
+
     try {
       const rows = await this.db.query<{ user_a_id: string; user_b_id: string }[]>(
         `SELECT user_a_id, user_b_id FROM diary_connections WHERE id = $1`,
@@ -394,9 +399,13 @@ export class FlickerService {
         type: 'new_entry',
         entry_id: payload.entryId,
         author_id: payload.authorId,
+        entry_type: 'text',
+        duration_seconds: null,
+        media_url: null,
+        thumbnail_url: null,
+        url_expires_at: null,
       });
     } catch (err: unknown) {
-      // SSE delivery is best-effort — FCM is the reliable backup
       this.logger.error('onEntryCreated SSE push failed', err);
     }
   }

@@ -260,13 +260,14 @@ describe('FlickerService', () => {
   // ── onEntryCreated SSE bridge ──────────────────────────────────────────────
 
   describe('onEntryCreated (SSE bridge)', () => {
-    it('pushes new_entry SSE event to partner only', async () => {
+    it('pushes new_entry SSE event to partner only for text entries', async () => {
       mockDb.query.mockResolvedValueOnce([CONN_ROW]);
 
       await service.onEntryCreated({
         entryId: 'entry-001',
         connectionId: CONN_ID,
         authorId: SENDER_ID,
+        entryType: 'text',
       });
 
       // Only partner should receive the SSE event
@@ -282,12 +283,23 @@ describe('FlickerService', () => {
       );
     });
 
+    it('skips SSE for voice/video entries (handled by confirmUpload)', async () => {
+      await service.onEntryCreated({
+        entryId: 'e-voice',
+        connectionId: CONN_ID,
+        authorId: SENDER_ID,
+        entryType: 'voice',
+      });
+
+      expect(mockEvents.push).not.toHaveBeenCalled();
+    });
+
     it('silently handles DB errors without crashing', async () => {
       mockDb.query.mockRejectedValueOnce(new Error('DB down'));
 
       await expect(
         service.onEntryCreated({
-          entryId: 'e1', connectionId: CONN_ID, authorId: SENDER_ID,
+          entryId: 'e1', connectionId: CONN_ID, authorId: SENDER_ID, entryType: 'text',
         }),
       ).resolves.not.toThrow();
     });

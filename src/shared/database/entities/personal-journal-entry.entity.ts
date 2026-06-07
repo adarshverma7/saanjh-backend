@@ -32,6 +32,9 @@ export class PersonalJournalEntry {
   @Column({ type: 'varchar', length: 20, nullable: true })
   mood: string | null;
 
+  @Column({ type: 'varchar', length: 20, default: 'completed' })
+  upload_status: string; // 'pending' | 'completed' | 'failed'
+
   @Column({ type: 'boolean', default: false })
   is_starred: boolean;
 
