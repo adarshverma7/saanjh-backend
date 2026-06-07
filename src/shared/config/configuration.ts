@@ -42,17 +42,21 @@ export default () => ({
     authKey: process.env.MSG91_AUTH_KEY ?? '',
   },
 
-  // Firebase (Auth only — storage migrated to Supabase)
+  // Firebase (Auth only)
   firebase: {
     projectId:     process.env.FIREBASE_PROJECT_ID      ?? '',
     privateKey:   (process.env.FIREBASE_PRIVATE_KEY     ?? '').replace(/\\n/g, '\n'),
     clientEmail:   process.env.FIREBASE_CLIENT_EMAIL    ?? '',
   },
 
-  // Supabase Storage
-  supabase: {
-    url:        process.env.SUPABASE_URL         ?? '',
-    serviceKey: process.env.SUPABASE_SERVICE_KEY ?? '',
+  // Backblaze B2 Storage (S3-compatible)
+  b2: {
+    endpoint:        process.env.B2_ENDPOINT          ?? '',
+    region:          process.env.B2_REGION            ?? 'us-east-005',
+    accessKeyId:     process.env.B2_ACCESS_KEY_ID     ?? '',
+    secretAccessKey: process.env.B2_SECRET_ACCESS_KEY ?? '',
+    bucketName:      process.env.B2_BUCKET_NAME       ?? '',
+    publicUrl:       process.env.B2_PUBLIC_URL        ?? '',
   },
 
   // Admin
@@ -63,7 +67,4 @@ export default () => ({
 
   // Sentry
   sentryDsn: process.env.SENTRY_DSN,
-
-  // Storage prefix (for staging isolation: 'staging/')
-  storagePrefix: process.env.STORAGE_PREFIX ?? '',
 });

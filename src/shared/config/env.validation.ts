@@ -18,8 +18,12 @@ export const envValidationSchema = Joi.object({
   JWT_PUBLIC_KEY:        required(Joi.string()),
   PHONE_HASH_SALT:       required(Joi.string().min(16)),
   REFRESH_TOKEN_SECRET:  required(Joi.string().min(32)),
-  SUPABASE_URL:         required(Joi.string().uri()),
-  SUPABASE_SERVICE_KEY: required(Joi.string()),
+  B2_ENDPOINT:          required(Joi.string().uri()),
+  B2_REGION:            required(Joi.string()),
+  B2_ACCESS_KEY_ID:     required(Joi.string()),
+  B2_SECRET_ACCESS_KEY: required(Joi.string()),
+  B2_BUCKET_NAME:       required(Joi.string()),
+  B2_PUBLIC_URL:        required(Joi.string().uri()),
   ADMIN_JWT_SECRET:      required(Joi.string().min(32)),
 
   // Always optional (added as features are enabled)
@@ -36,5 +40,4 @@ export const envValidationSchema = Joi.object({
   REDIS_URL:             Joi.string().uri().optional(),
   SENTRY_DSN:            Joi.string().uri().optional(),
   ALLOWED_ORIGINS:       Joi.string().optional(),
-  STORAGE_PREFIX:        Joi.string().optional(),
 });

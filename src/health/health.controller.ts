@@ -1,10 +1,14 @@
 import { Controller, Get } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
+import { StorageService } from '../shared/storage/storage.service';
 
 @Controller('health')
 export class HealthController {
-  constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
+  constructor(
+    @InjectDataSource() private readonly dataSource: DataSource,
+    private readonly storage: StorageService,
+  ) {}
 
   @Get()
   async check() {
@@ -15,9 +19,12 @@ export class HealthController {
       dbStatus = 'error';
     }
 
+    const storageOk = await this.storage.checkConnectivity().catch(() => false);
+
     return {
       status: 'ok',
       db: dbStatus,
+      storage: storageOk ? 'b2_connected' : 'b2_error',
       timestamp: new Date().toISOString(),
       uptime: Math.floor(process.uptime()),
       version: process.env.npm_package_version ?? '0.0.1',

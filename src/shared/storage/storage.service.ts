@@ -1,59 +1,81 @@
 import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { StorageClient } from '@supabase/storage-js';
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  HeadBucketCommand,
+  DeleteObjectCommand,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
-const BUCKET = 'saanjh-media';
+const SIGNED_UPLOAD_TTL = 900;    // 15 min — Flutter has this long to complete the PUT
+const SIGNED_DOWNLOAD_TTL = 3600; // 1 hr default for playback
 
 @Injectable()
 export class StorageService {
+  private readonly client: S3Client;
+  private readonly bucket: string;
   private readonly logger = new Logger(StorageService.name);
-  private readonly storage: StorageClient;
-  private readonly prefix: string;
 
   constructor(private readonly config: ConfigService) {
-    const url = this.config.get<string>('supabase.url') ?? '';
-    const key = this.config.get<string>('supabase.serviceKey') ?? '';
-    this.storage = new StorageClient(`${url}/storage/v1`, {
-      Authorization: `Bearer ${key}`,
-      apikey: key,
+    this.client = new S3Client({
+      region: this.config.getOrThrow<string>('b2.region'),
+      endpoint: this.config.getOrThrow<string>('b2.endpoint'),
+      credentials: {
+        accessKeyId: this.config.getOrThrow<string>('b2.accessKeyId'),
+        secretAccessKey: this.config.getOrThrow<string>('b2.secretAccessKey'),
+      },
+      forcePathStyle: true, // Required for Backblaze B2 S3-compatible API
     });
-    this.prefix = this.config.get<string>('storagePrefix') ?? '';
+    this.bucket = this.config.getOrThrow<string>('b2.bucketName');
   }
 
   // ── Signed upload URL (Flutter PUTs directly to this URL) ─────────────────
 
   async getSignedUploadUrl(key: string): Promise<string> {
-    const { data, error } = await this.storage
-      .from(BUCKET)
-      .createSignedUploadUrl(this.addPrefix(key));
-    if (error || !data) {
-      this.logger.error(`getSignedUploadUrl failed key=${key}`, error);
+    try {
+      return await getSignedUrl(
+        this.client,
+        new PutObjectCommand({ Bucket: this.bucket, Key: key }),
+        { expiresIn: SIGNED_UPLOAD_TTL },
+      );
+    } catch (err: unknown) {
+      this.logger.error(`getSignedUploadUrl failed key=${key}`, err);
       throw new InternalServerErrorException('STORAGE_UPLOAD_URL_ERROR');
     }
-    return data.signedUrl;
   }
 
   // ── Signed download URL (1 hour default) ──────────────────────────────────
 
-  async getSignedDownloadUrl(key: string, expiresIn = 3600): Promise<string> {
-    const { data, error } = await this.storage
-      .from(BUCKET)
-      .createSignedUrl(this.addPrefix(key), expiresIn);
-    if (error || !data) {
-      this.logger.error(`getSignedDownloadUrl failed key=${key}`, error);
+  async getSignedDownloadUrl(key: string, expiresIn = SIGNED_DOWNLOAD_TTL): Promise<string> {
+    try {
+      return await getSignedUrl(
+        this.client,
+        new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+        { expiresIn },
+      );
+    } catch (err: unknown) {
+      this.logger.error(`getSignedDownloadUrl failed key=${key}`, err);
       throw new InternalServerErrorException('STORAGE_DOWNLOAD_ERROR');
     }
-    return data.signedUrl;
   }
 
   // ── Server-side upload (used by PdfWorker for generated PDFs) ─────────────
 
   async putObject(key: string, body: Buffer, contentType: string): Promise<void> {
-    const { error } = await this.storage
-      .from(BUCKET)
-      .upload(this.addPrefix(key), body, { contentType, upsert: true });
-    if (error) {
-      this.logger.error(`putObject failed key=${key}`, error);
+    try {
+      await this.client.send(
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Body: body,
+          ContentType: contentType,
+        }),
+      );
+    } catch (err: unknown) {
+      this.logger.error(`putObject failed key=${key}`, err);
       throw new InternalServerErrorException('STORAGE_UPLOAD_ERROR');
     }
   }
@@ -61,29 +83,21 @@ export class StorageService {
   // ── Existence check (called after Flutter finishes direct upload) ──────────
 
   async objectExists(key: string): Promise<boolean> {
-    const prefixedKey = this.addPrefix(key);
-    const lastSlash = prefixedKey.lastIndexOf('/');
-    const folder = lastSlash >= 0 ? prefixedKey.slice(0, lastSlash) : '';
-    const filename = lastSlash >= 0 ? prefixedKey.slice(lastSlash + 1) : prefixedKey;
-
-    const { data, error } = await this.storage
-      .from(BUCKET)
-      .list(folder, { search: filename });
-    if (error) {
-      this.logger.error(`objectExists failed key=${key}`, error);
-      throw new InternalServerErrorException('STORAGE_ERROR');
+    try {
+      await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key }));
+      return true;
+    } catch {
+      return false;
     }
-    return (data ?? []).some((f) => f.name === filename);
   }
 
   // ── Delete (called from cleanup worker after grace period) ────────────────
 
   async deleteObject(key: string): Promise<void> {
-    const { error } = await this.storage
-      .from(BUCKET)
-      .remove([this.addPrefix(key)]);
-    if (error) {
-      this.logger.error(`deleteObject failed key=${key}`, error);
+    try {
+      await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: key }));
+    } catch (err: unknown) {
+      this.logger.error(`deleteObject failed key=${key}`, err);
       throw new InternalServerErrorException('STORAGE_ERROR');
     }
   }
@@ -91,14 +105,40 @@ export class StorageService {
   // ── Buffer download (used by TranscriptionWorker before sending to Whisper) ─
 
   async getObjectBuffer(key: string): Promise<Buffer> {
-    const { data, error } = await this.storage
-      .from(BUCKET)
-      .download(this.addPrefix(key));
-    if (error || !data) {
-      this.logger.error(`getObjectBuffer failed key=${key}`, error);
+    try {
+      const response = await this.client.send(
+        new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+
+      if (!response.Body) {
+        throw new Error('Empty response body');
+      }
+
+      // In Node.js, Body is a Readable (SdkStreamMixin) which is async-iterable
+      const chunks: Buffer[] = [];
+      for await (const chunk of response.Body as AsyncIterable<Uint8Array>) {
+        chunks.push(Buffer.from(chunk));
+      }
+      return Buffer.concat(chunks);
+    } catch (err: unknown) {
+      this.logger.error(`getObjectBuffer failed key=${key}`, err);
       throw new InternalServerErrorException('STORAGE_DOWNLOAD_ERROR');
     }
-    return Buffer.from(await data.arrayBuffer());
+  }
+
+  // ── Health check — used by /v1/health to verify B2 connectivity ───────────
+
+  async checkConnectivity(): Promise<boolean> {
+    try {
+      await this.client.send(new HeadBucketCommand({ Bucket: this.bucket }));
+      return true;
+    } catch (err: unknown) {
+      // Any HTTP response (403, 404, etc.) means B2 is reachable.
+      // Only network-level failures (timeout, DNS) leave httpStatusCode undefined.
+      const status = (err as { $metadata?: { httpStatusCode?: number } })
+        ?.$metadata?.httpStatusCode;
+      return status !== undefined;
+    }
   }
 
   // ── Media key generators ──────────────────────────────────────────────────
@@ -139,12 +179,6 @@ export class StorageService {
   static extractUserIdFromJournalKey(key: string): string | null {
     const match = /^entries\/journal\/([^/]+)\//.exec(key);
     return match ? match[1] : null;
-  }
-
-  // ── Private helpers ───────────────────────────────────────────────────────
-
-  private addPrefix(key: string): string {
-    return this.prefix ? `${this.prefix}${key}` : key;
   }
 }
 
