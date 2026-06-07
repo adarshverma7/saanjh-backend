@@ -10,6 +10,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { EntriesService } from './entries.service';
 import { StorageService } from '../shared/storage/storage.service';
 import { StreaksService } from '../streaks/streaks.service';
+import { EventsService } from '../flicker/events.service';
 import { TooManyRequestsException } from '../shared/exceptions/too-many-requests.exception';
 
 const CONNECTION_ID = 'conn-uuid-001';
@@ -46,6 +47,7 @@ describe('EntriesService', () => {
   let mockStorage: Partial<StorageService>;
   let mockEventEmitter: { emit: jest.Mock };
   let mockStreaks: Partial<StreaksService>;
+  let mockEventsService: { push: jest.Mock };
 
   beforeEach(async () => {
     mockDb = { query: jest.fn() };
@@ -56,6 +58,7 @@ describe('EntriesService', () => {
     };
     mockEventEmitter = { emit: jest.fn() };
     mockStreaks = { onNewEntry: jest.fn().mockResolvedValue(undefined) };
+    mockEventsService = { push: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -65,6 +68,7 @@ describe('EntriesService', () => {
         { provide: EventEmitter2, useValue: mockEventEmitter },
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: StreaksService, useValue: mockStreaks },
+        { provide: EventsService, useValue: mockEventsService },
       ],
     }).compile();
 
