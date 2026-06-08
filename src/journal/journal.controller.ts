@@ -11,6 +11,7 @@ import {
   HttpStatus,
   UseGuards,
 } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiParam, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
 import { JournalService } from './journal.service';
 import { JournalUploadUrlDto } from './dto/journal-upload-url.dto';
 import { CreateJournalEntryDto } from './dto/create-journal-entry.dto';
@@ -36,16 +37,14 @@ import type { RequestUser } from '../auth/strategies/jwt.strategy';
  *   PATCH  /v1/journal/entries/:id/star → star / unstar
  *   DELETE /v1/journal/entries/:id      → soft delete
  */
+@ApiTags('Journal')
+@ApiBearerAuth('JWT')
 @Controller('journal')
 @UseGuards(JwtAuthGuard)
 export class JournalController {
   constructor(private readonly journalService: JournalService) {}
 
-  /**
-   * POST /v1/journal/request-upload
-   * Telegram-style step 1: pre-creates a pending row and returns a 15-min
-   * presigned PUT URL. Flutter uploads directly to B2.
-   */
+  @ApiOperation({ summary: '[Step 1] Request journal upload URL', description: 'Pre-creates a pending row and returns a 15-min presigned PUT URL for direct B2 upload.' })
   @Post('request-upload')
   @HttpCode(HttpStatus.OK)
   requestUpload(
@@ -55,10 +54,7 @@ export class JournalController {
     return this.journalService.requestUpload(user.id, entryType);
   }
 
-  /**
-   * POST /v1/journal/confirm
-   * Telegram-style step 2: verifies the B2 upload and marks the entry completed.
-   */
+  @ApiOperation({ summary: '[Step 2] Confirm journal upload', description: 'Verifies the B2 PUT succeeded and marks the journal entry as completed.' })
   @Post('confirm')
   @HttpCode(HttpStatus.OK)
   confirmUpload(
@@ -68,10 +64,7 @@ export class JournalController {
     return this.journalService.confirmUpload(user.id, dto);
   }
 
-  /**
-   * POST /v1/journal/upload-url
-   * Legacy pre-signed URL endpoint — kept for backward compatibility.
-   */
+  @ApiOperation({ summary: '[Legacy] Get journal upload URL', description: 'Old pre-signed URL endpoint. Use /request-upload + /confirm instead.' })
   @Post('upload-url')
   @HttpCode(HttpStatus.OK)
   getUploadUrl(
@@ -81,10 +74,7 @@ export class JournalController {
     return this.journalService.getUploadUrl(user.id, dto);
   }
 
-  /**
-   * POST /v1/journal/entries
-   * Creates a journal entry (text) or legacy voice/video via old flow.
-   */
+  @ApiOperation({ summary: 'Create journal entry', description: 'Creates a text journal entry, or legacy voice/video with a media_key.' })
   @Post('entries')
   createEntry(
     @CurrentUser() user: RequestUser,
@@ -93,11 +83,10 @@ export class JournalController {
     return this.journalService.createEntry(user.id, dto);
   }
 
-  /**
-   * GET /v1/journal/entries
-   * Paginated list of journal entries. No media URLs — call GET ./:id for playback.
-   * Supports filter: all | voice | video | text | starred
-   */
+  @ApiOperation({ summary: 'List journal entries', description: 'Paginated list. No media URLs — call GET /entries/:id for a signed playback URL.' })
+  @ApiQuery({ name: 'filter', required: false, enum: ['all', 'voice', 'video', 'text', 'starred'] })
+  @ApiQuery({ name: 'cursor', required: false })
+  @ApiQuery({ name: 'limit', required: false })
   @Get('entries')
   listEntries(
     @CurrentUser() user: RequestUser,
@@ -106,19 +95,15 @@ export class JournalController {
     return this.journalService.listEntries(user.id, dto);
   }
 
-  /**
-   * GET /v1/journal/entries/:id
-   * Returns the entry with a 1-hour signed media URL (if applicable).
-   */
+  @ApiOperation({ summary: 'Get journal entry', description: 'Returns the entry with a 1-hour signed media URL (if voice/video).' })
+  @ApiParam({ name: 'id', description: 'Journal entry UUID' })
   @Get('entries/:id')
   getEntry(@CurrentUser() user: RequestUser, @Param('id') entryId: string) {
     return this.journalService.getEntry(user.id, entryId);
   }
 
-  /**
-   * PATCH /v1/journal/entries/:id/star
-   * Stars or unstars an entry.
-   */
+  @ApiOperation({ summary: 'Star / unstar journal entry' })
+  @ApiParam({ name: 'id', description: 'Journal entry UUID' })
   @Patch('entries/:id/star')
   @HttpCode(HttpStatus.OK)
   starEntry(
@@ -129,11 +114,8 @@ export class JournalController {
     return this.journalService.starEntry(user.id, entryId, dto.is_starred);
   }
 
-  /**
-   * DELETE /v1/journal/entries/:id
-   * Soft-deletes the entry. Media is retained in R2 for 90 days.
-   * Personal memories are never immediately destroyed.
-   */
+  @ApiOperation({ summary: 'Delete journal entry', description: 'Soft-delete. Media retained in B2 for 90 days.' })
+  @ApiParam({ name: 'id', description: 'Journal entry UUID' })
   @Delete('entries/:id')
   @HttpCode(HttpStatus.OK)
   async deleteEntry(

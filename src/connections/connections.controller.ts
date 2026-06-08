@@ -10,6 +10,7 @@ import {
   HttpStatus,
   UseGuards,
 } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { ConnectionsService, InviteListItem } from './connections.service';
 import { CreateInviteDto } from './dto/create-invite.dto';
@@ -30,6 +31,7 @@ import { RateLimitGuard, RateLimit } from '../guards/rate-limit.guard';
 import { CurrentUser } from '../decorators/current-user.decorator';
 import type { RequestUser } from '../auth/strategies/jwt.strategy';
 
+@ApiTags('Connections')
 @Controller()
 export class ConnectionsController {
   constructor(
@@ -39,11 +41,9 @@ export class ConnectionsController {
 
   // ── Invite creation (JWT required) ─────────────────────────────────────────
 
-  /**
-   * POST /v1/connections/invite
-   * Creates a new invite for a specific person.
-   * Returns a deep link + pre-filled WhatsApp message.
-   */
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'Create invite', description: 'Creates a new invite. Returns a deep link + pre-filled WhatsApp message. Rate limited: 5/hour.' })
+  @ApiResponse({ status: 201, description: 'Invite created with deep link' })
   @Post('connections/invite')
   @UseGuards(JwtAuthGuard, RateLimitGuard)
   @RateLimit(5, 3600, 'connections:invite')
@@ -57,11 +57,8 @@ export class ConnectionsController {
 
   // ── Invite details (public — used before signup) ───────────────────────────
 
-  /**
-   * GET /v1/connections/invite/:code
-   * Returns invite details for the invited user to see before signing up.
-   * No auth required — used from the deep link landing page.
-   */
+  @ApiOperation({ summary: 'Get invite details (public)', description: 'Returns invite details before sign-up. No auth required — used from the deep link landing page.' })
+  @ApiParam({ name: 'code', description: 'Invite code from the deep link' })
   @Get('connections/invite/:code')
   getInviteDetails(@Param('code') code: string) {
     return this.connectionsService.getInviteDetails(code);
@@ -69,11 +66,9 @@ export class ConnectionsController {
 
   // ── Accept invite (JWT required) ───────────────────────────────────────────
 
-  /**
-   * POST /v1/connections/invite/:code/accept
-   * Accepts a pending invite and creates the diary connection.
-   * The acceptor provides their own name for the connection.
-   */
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'Accept invite', description: 'Accepts a pending invite and creates the diary connection. Acceptor provides their own connection name.' })
+  @ApiParam({ name: 'code', description: 'Invite code from the deep link' })
   @Post('connections/invite/:code/accept')
   @UseGuards(JwtAuthGuard)
   acceptInvite(
@@ -90,12 +85,8 @@ export class ConnectionsController {
 
   // ── List connections ───────────────────────────────────────────────────────
 
-  /**
-   * POST /v1/connections/connect-direct
-   * Creates a diary connection with an existing Saanjh user in one step.
-   * If a connection already exists it is returned instead of creating a duplicate.
-   * Used by the Discover screen "Start diary" button.
-   */
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'Connect directly', description: 'Creates a diary connection with an existing Saanjh user in one step. Returns existing connection if duplicate. Used by Discover screen.' })
   @Post('connections/connect-direct')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
@@ -113,11 +104,8 @@ export class ConnectionsController {
     );
   }
 
-  /**
-   * POST /v1/connections/check-contacts
-   * Checks which phone numbers in the user's contacts have Saanjh accounts.
-   * Phone numbers are hashed server-side — never stored or logged.
-   */
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'Check contacts', description: 'Checks which of the supplied phone numbers have Saanjh accounts. Numbers are hashed server-side — never stored.' })
   @Post('connections/check-contacts')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
@@ -129,11 +117,8 @@ export class ConnectionsController {
     return this.connectionsService.checkContacts(user.id, dto.phones, salt);
   }
 
-  /**
-   * GET /v1/connections
-   * Returns all active diary connections for the current user.
-   * Includes partner profile, streak, unread count per connection.
-   */
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'List connections', description: 'Returns all active diary connections with partner profile, streak data, and unread count.' })
   @Get('connections')
   @UseGuards(JwtAuthGuard)
   getConnections(@CurrentUser() user: RequestUser) {
@@ -142,10 +127,9 @@ export class ConnectionsController {
 
   // ── Single connection (member-gated) ───────────────────────────────────────
 
-  /**
-   * GET /v1/connections/:id
-   * Returns a single connection with full partner detail.
-   */
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'Get connection', description: 'Returns a single connection with full partner detail.' })
+  @ApiParam({ name: 'id', description: 'Connection UUID' })
   @Get('connections/:id')
   @UseGuards(JwtAuthGuard, ConnectionMemberGuard)
   getConnection(
@@ -155,21 +139,18 @@ export class ConnectionsController {
     return this.connectionsService.getConnection(user.id, connectionId);
   }
 
-  /**
-   * GET /v1/connections/:id/health
-   * Returns streak, diary weather, entry counts for the connection.
-   * Used by Memory Tree and diary contact cards.
-   */
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'Get connection health', description: 'Returns streak, diary weather, and entry counts. Used by Memory Tree and diary contact cards.' })
+  @ApiParam({ name: 'id', description: 'Connection UUID' })
   @Get('connections/:id/health')
   @UseGuards(JwtAuthGuard, ConnectionMemberGuard)
   getConnectionHealth(@Param('id') connectionId: string) {
     return this.connectionsService.getConnectionHealth(connectionId);
   }
 
-  /**
-   * PATCH /v1/connections/:id/name
-   * Renames the connection (personal label — only affects this user's view).
-   */
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'Rename connection', description: 'Personal label — only affects this user\'s view of the connection.' })
+  @ApiParam({ name: 'id', description: 'Connection UUID' })
   @Patch('connections/:id/name')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard, ConnectionMemberGuard)
@@ -188,21 +169,17 @@ export class ConnectionsController {
 
   // ── My invites ─────────────────────────────────────────────────────────────
 
-  /**
-   * GET /v1/invites
-   * Returns all invites sent by the current user.
-   * Used to show "Waiting for Maa..." pending invite state.
-   */
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'List my invites', description: 'Returns all invites sent by the current user. Used to show pending invite state ("Waiting for Maa…").' })
   @Get('invites')
   @UseGuards(JwtAuthGuard)
   getMyInvites(@CurrentUser() user: RequestUser): Promise<InviteListItem[]> {
     return this.connectionsService.getMyInvites(user.id);
   }
 
-  /**
-   * DELETE /v1/invites/:id
-   * Cancels a pending invite.
-   */
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'Cancel invite', description: 'Cancels a pending invite by its ID.' })
+  @ApiParam({ name: 'id', description: 'Invite UUID' })
   @Delete('invites/:id')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)

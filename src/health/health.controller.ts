@@ -1,8 +1,10 @@
 import { Controller, Get } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { StorageService } from '../shared/storage/storage.service';
 
+@ApiTags('Health')
 @Controller('health')
 export class HealthController {
   constructor(
@@ -10,6 +12,8 @@ export class HealthController {
     private readonly storage: StorageService,
   ) {}
 
+  @ApiOperation({ summary: 'Health check', description: 'Returns DB and B2 connectivity status, uptime, and version. No auth required.' })
+  @ApiResponse({ status: 200, schema: { example: { status: 'ok', db: 'ok', storage: 'b2_connected', uptime: 1234, version: '1.0.0' } } })
   @Get()
   async check() {
     let dbStatus = 'ok';

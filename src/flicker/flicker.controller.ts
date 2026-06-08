@@ -9,6 +9,7 @@ import {
   UseGuards,
   Sse,
 } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { Observable } from 'rxjs';
 import { FlickerService } from './flicker.service';
 import { EventsService } from './events.service';
@@ -28,6 +29,9 @@ import type { RequestUser } from '../auth/strategies/jwt.strategy';
  *   GET  connections/:id/flicker/latest — current flicker status
  *   GET  connections/:id/flicker/history — paginated flicker history
  */
+@ApiTags('Flicker & Events')
+@ApiBearerAuth('JWT')
+@ApiParam({ name: 'id', description: 'Connection UUID' })
 @Controller('connections')
 export class FlickerController {
   constructor(
@@ -51,6 +55,8 @@ export class FlickerController {
    * Flutter uses the EventSource package or http streaming to subscribe.
    * SSE auto-reconnects if the connection drops.
    */
+  @ApiOperation({ summary: 'SSE event stream', description: 'Opens a persistent Server-Sent Events stream. Event types: flicker_received, mutual_reveal, new_entry, transcription_ready, heartbeat (every 25 s).' })
+  @ApiResponse({ status: 200, description: 'text/event-stream — keep-alive SSE stream' })
   @Sse(':id/events')
   @UseGuards(JwtAuthGuard, ConnectionMemberGuard)
   liveEvents(
@@ -73,6 +79,7 @@ export class FlickerController {
    *
    * Rate limited: 10 per user per connection per hour.
    */
+  @ApiOperation({ summary: 'Send Flicker', description: 'Sends a presence signal. If partner also flickered within 5 min → mutual_reveal SSE to both. Rate limited: 10/hour.' })
   @Post(':id/flicker')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard, ConnectionMemberGuard, RateLimitGuard)
@@ -96,6 +103,7 @@ export class FlickerController {
    *
    * Cached for 30 s in memory — safe to poll from Flutter Pulse screen.
    */
+  @ApiOperation({ summary: 'Get flicker status', description: 'Returns current flicker state: last sent/received times, active mutual reveal, window close time. Cached 30 s.' })
   @Get(':id/flicker/latest')
   @UseGuards(JwtAuthGuard, ConnectionMemberGuard)
   getFlickerStatus(
@@ -111,6 +119,9 @@ export class FlickerController {
    * GET /v1/connections/:id/flicker/history
    * Returns paginated history of flickers for this connection (sent and received).
    */
+  @ApiOperation({ summary: 'Get flicker history', description: 'Paginated history of flickers sent and received for this connection.' })
+  @ApiQuery({ name: 'limit', required: false, description: 'Page size (max 100, default 30)' })
+  @ApiQuery({ name: 'cursor', required: false, description: 'Pagination cursor' })
   @Get(':id/flicker/history')
   @UseGuards(JwtAuthGuard, ConnectionMemberGuard)
   getFlickerHistory(

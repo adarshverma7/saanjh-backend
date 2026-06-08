@@ -6,12 +6,16 @@ import {
   Header,
   UseGuards,
 } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiParam, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
 import { OnThisDayService } from './on-this-day.service';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { ConnectionMemberGuard } from '../guards/connection-member.guard';
 import { CurrentUser } from '../decorators/current-user.decorator';
 import type { RequestUser } from '../auth/strategies/jwt.strategy';
 
+@ApiTags('On This Day')
+@ApiBearerAuth('JWT')
+@ApiParam({ name: 'id', description: 'Connection UUID' })
 @Controller('connections/:id/on-this-day')
 @UseGuards(JwtAuthGuard, ConnectionMemberGuard)
 export class OnThisDayController {
@@ -30,6 +34,8 @@ export class OnThisDayController {
    * Cache-Control: 3600 s — entries from past years never change.
    * Flutter can cache this response for 1 hour without staling.
    */
+  @ApiOperation({ summary: 'Get On This Day entries', description: 'Returns diary entries from the same calendar date (month+day) in past years. Cached 1 hour.' })
+  @ApiQuery({ name: 'date', required: false, description: 'YYYY-MM-DD override (defaults to today in IST)' })
   @Get()
   @Header('Cache-Control', 'private, max-age=3600')
   getOnThisDay(

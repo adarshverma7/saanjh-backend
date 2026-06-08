@@ -7,6 +7,7 @@ import {
   HttpStatus,
   UseGuards,
 } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiParam, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
 import { MemoryJarService } from './memory-jar.service';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
 import { ConnectionMemberGuard } from '../guards/connection-member.guard';
@@ -18,6 +19,9 @@ import type { RequestUser } from '../auth/strategies/jwt.strategy';
  *   GET /v1/connections/:id/memory-jar/surface  — time-gated random star
  *   GET /v1/connections/:id/memory-jar          — all starred, paginated
  */
+@ApiTags('Memory Jar')
+@ApiBearerAuth('JWT')
+@ApiParam({ name: 'id', description: 'Connection UUID' })
 @Controller('connections/:id/memory-jar')
 @UseGuards(JwtAuthGuard, ConnectionMemberGuard)
 export class MemoryJarController {
@@ -33,6 +37,7 @@ export class MemoryJarController {
    * Response always includes total_starred so Flutter can show the star count
    * even when no memory is surfaced.
    */
+  @ApiOperation({ summary: 'Surface random memory', description: 'Returns one random starred memory. Time-gated: returns { surfaced: false } if called within 4 hours of the last surface.' })
   @Get('surface')
   @HttpCode(HttpStatus.OK)
   surfaceMemory(
@@ -52,6 +57,9 @@ export class MemoryJarController {
    *   limit   Max entries per page (default 20, max 50)
    *   cursor  Opaque pagination cursor from previous response
    */
+  @ApiOperation({ summary: 'List all starred memories', description: 'All starred entries in reverse-star order. Used by "View all memories" screen.' })
+  @ApiQuery({ name: 'limit', required: false, description: 'Page size (default 20, max 50)' })
+  @ApiQuery({ name: 'cursor', required: false })
   @Get()
   getAllStarred(
     @CurrentUser() user: RequestUser,

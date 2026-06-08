@@ -11,6 +11,13 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import type { Request } from 'express';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiResponse,
+  ApiBearerAuth,
+  ApiBody,
+} from '@nestjs/swagger';
 import { AuthService, SessionInfo } from './auth.service';
 import { SendOtpDto } from './dto/send-otp.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
@@ -34,17 +41,16 @@ interface AuthenticatedRequest extends Request {
   user: RequestUser;
 }
 
+@ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   // ── OTP ────────────────────────────────────────────────────────────────────
 
-  /**
-   * POST /v1/auth/otp/send
-   * Sends a 6-digit OTP to the phone number via SMS.
-   * Rate limited: 3 per phone per 10 min, 15 per IP per hour.
-   */
+  @ApiOperation({ summary: 'Send OTP', description: 'Sends a 6-digit OTP via SMS. Rate limited: 3/phone/10 min.' })
+  @ApiResponse({ status: 200, description: 'OTP sent' })
+  @ApiResponse({ status: 429, description: 'Rate limit exceeded' })
   @Post('otp/send')
   @HttpCode(HttpStatus.OK)
   @UseGuards(RateLimitGuard)
@@ -58,11 +64,9 @@ export class AuthController {
     return { message: 'OTP sent successfully', expires_in: 600 };
   }
 
-  /**
-   * POST /v1/auth/otp/verify
-   * Verifies OTP and issues access + refresh tokens.
-   * Creates a new user account if the phone is not registered.
-   */
+  @ApiOperation({ summary: 'Verify OTP', description: 'Verifies OTP and issues access + refresh tokens. Creates account if new.' })
+  @ApiResponse({ status: 200, description: 'JWT pair returned' })
+  @ApiResponse({ status: 401, description: 'Invalid or expired OTP' })
   @Post('otp/verify')
   @HttpCode(HttpStatus.OK)
   async verifyOtp(@Body() dto: VerifyOtpDto) {
@@ -74,11 +78,9 @@ export class AuthController {
     });
   }
 
-  /**
-   * POST /v1/auth/firebase/verify
-   * Accepts a Firebase ID token (issued after phone OTP verified by Firebase in Flutter).
-   * Creates user if new, returns our own JWT pair.
-   */
+  @ApiOperation({ summary: 'Verify Firebase token', description: 'Exchange a Firebase phone-OTP ID token for a Saanjh JWT pair. Creates account if new.' })
+  @ApiBody({ schema: { example: { id_token: 'firebase-id-token', device_id: 'uuid', device_type: 'android', app_version: '1.0.0', fcm_token: 'fcm-token' } } })
+  @ApiResponse({ status: 200, description: 'JWT pair returned' })
   @Post('firebase/verify')
   @HttpCode(HttpStatus.OK)
   async verifyFirebase(@Body() dto: VerifyFirebaseDto) {
@@ -92,11 +94,8 @@ export class AuthController {
 
   // ── Token ──────────────────────────────────────────────────────────────────
 
-  /**
-   * POST /v1/auth/token/refresh
-   * Rotates the refresh token and issues a new access token.
-   * The old refresh token is immediately invalidated.
-   */
+  @ApiOperation({ summary: 'Refresh access token', description: 'Rotates the refresh token and issues a new access token. Old token is invalidated immediately.' })
+  @ApiResponse({ status: 200, description: 'New JWT pair' })
   @Post('token/refresh')
   @HttpCode(HttpStatus.OK)
   async refreshToken(@Body() dto: RefreshTokenDto) {
@@ -105,10 +104,9 @@ export class AuthController {
 
   // ── Session management ─────────────────────────────────────────────────────
 
-  /**
-   * POST /v1/auth/logout
-   * Deactivates the current device session and clears the refresh token.
-   */
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'Logout', description: 'Deactivates the current device session and clears the refresh token.' })
+  @ApiResponse({ status: 200, description: 'Logged out' })
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
@@ -117,21 +115,18 @@ export class AuthController {
     return { message: 'Logged out successfully' };
   }
 
-  /**
-   * GET /v1/auth/sessions
-   * Returns all active device sessions for the current user.
-   * Used for "Manage devices" screen.
-   */
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'List active sessions', description: 'Returns all active device sessions. Used for "Manage devices" screen.' })
+  @ApiResponse({ status: 200, description: 'Array of sessions' })
   @Get('sessions')
   @UseGuards(JwtAuthGuard)
   async getSessions(@CurrentUser() user: RequestUser): Promise<SessionInfo[]> {
     return this.authService.getSessions(user.id);
   }
 
-  /**
-   * DELETE /v1/auth/sessions/:id
-   * Remotely revokes a specific device session (force logout that device).
-   */
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'Revoke a session', description: 'Remotely revokes a specific device session (force logout that device).' })
+  @ApiResponse({ status: 200, description: 'Session revoked' })
   @Delete('sessions/:id')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
@@ -145,11 +140,8 @@ export class AuthController {
 
   // ── Account deletion ───────────────────────────────────────────────────────
 
-  /**
-   * POST /v1/auth/account/delete/request
-   * Sends a deletion-confirmation OTP. Starts the deletion flow.
-   * 30-day grace period before data is permanently removed.
-   */
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'Request account deletion', description: 'Sends OTP for deletion confirmation. 30-day grace period before permanent removal.' })
   @Post('account/delete/request')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
@@ -163,11 +155,8 @@ export class AuthController {
     return { message: 'Deletion OTP sent. You have 30 days to cancel after confirming.' };
   }
 
-  /**
-   * POST /v1/auth/account/delete/confirm
-   * Verifies OTP and soft-deletes the account.
-   * User is logged out from all devices immediately.
-   */
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'Confirm account deletion', description: 'Verifies OTP and soft-deletes the account. Logs out all devices immediately.' })
   @Post('account/delete/confirm')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)

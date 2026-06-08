@@ -11,6 +11,7 @@ import {
   HttpStatus,
   UseGuards,
 } from '@nestjs/common';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiParam, ApiQuery } from '@nestjs/swagger';
 import { EntriesService } from './entries.service';
 import { RateLimitGuard, RateLimit } from '../guards/rate-limit.guard';
 import { UploadUrlDto } from './dto/upload-url.dto';
@@ -28,16 +29,16 @@ import type { RequestUser } from '../auth/strategies/jwt.strategy';
  * All endpoints nested under /v1/connections/:id/entries.
  * ConnectionMemberGuard verifies user is user_a or user_b before every action.
  */
+@ApiTags('Diary Entries')
+@ApiBearerAuth('JWT')
+@ApiParam({ name: 'id', description: 'Connection UUID' })
 @Controller('connections/:id/entries')
 @UseGuards(JwtAuthGuard, ConnectionMemberGuard)
 export class EntriesController {
   constructor(private readonly entriesService: EntriesService) {}
 
-  /**
-   * POST /v1/connections/:id/entries/request-upload
-   * Telegram-style step 1: pre-creates a pending DB row and returns a 15-min
-   * presigned PUT URL. Flutter uploads binary directly to B2.
-   */
+  @ApiOperation({ summary: '[Step 1] Request upload URL', description: 'Telegram-style: pre-creates a pending DB row and returns a 15-min presigned PUT URL. Flutter uploads binary directly to B2, then calls /confirm.' })
+  @ApiResponse({ status: 200, description: '{ entry_id, media_key, upload_url, expires_at }' })
   @Post('request-upload')
   @HttpCode(HttpStatus.OK)
   requestUpload(
@@ -48,11 +49,8 @@ export class EntriesController {
     return this.entriesService.requestUpload(user.id, connectionId, dto);
   }
 
-  /**
-   * POST /v1/connections/:id/entries/confirm
-   * Telegram-style step 2: verifies the B2 upload, marks entry completed,
-   * and pushes an SSE new_entry event with a signed URL to the partner.
-   */
+  @ApiOperation({ summary: '[Step 2] Confirm upload', description: 'Verifies the B2 PUT succeeded, marks entry completed, pushes SSE new_entry event with signed URL to partner.' })
+  @ApiResponse({ status: 200, description: 'Completed diary entry object' })
   @Post('confirm')
   @HttpCode(HttpStatus.OK)
   confirmUpload(
@@ -63,10 +61,7 @@ export class EntriesController {
     return this.entriesService.confirmUpload(user.id, connectionId, dto);
   }
 
-  /**
-   * POST /v1/connections/:id/entries/upload-url
-   * Legacy pre-signed URL endpoint — kept for backward compatibility.
-   */
+  @ApiOperation({ summary: '[Legacy] Get upload URL', description: 'Old pre-signed URL endpoint. Use /request-upload + /confirm instead.' })
   @Post('upload-url')
   @HttpCode(HttpStatus.OK)
   @UseGuards(RateLimitGuard)
@@ -79,10 +74,7 @@ export class EntriesController {
     return this.entriesService.getUploadUrl(user.id, connectionId, dto);
   }
 
-  /**
-   * POST /v1/connections/:id/entries
-   * Creates a text entry, or legacy voice/video via the old two-step flow.
-   */
+  @ApiOperation({ summary: 'Create text entry (or legacy media)', description: 'Creates a text entry inline, or legacy voice/video using the old two-step flow with a media_key.' })
   @Post()
   createEntry(
     @CurrentUser() user: RequestUser,
@@ -92,11 +84,10 @@ export class EntriesController {
     return this.entriesService.createEntry(user.id, connectionId, dto);
   }
 
-  /**
-   * GET /v1/connections/:id/entries
-   * Paginated diary thread — metadata only, no signed URLs.
-   * Client calls GET .../entries/:entryId when ready to play.
-   */
+  @ApiOperation({ summary: 'List diary entries', description: 'Paginated diary thread — metadata only, no signed URLs. Call GET …/:entryId to get a playback URL.' })
+  @ApiQuery({ name: 'cursor', required: false, description: 'Pagination cursor from previous response' })
+  @ApiQuery({ name: 'filter', required: false, enum: ['all', 'voice', 'video', 'starred'], description: 'Entry type filter' })
+  @ApiQuery({ name: 'limit', required: false, description: 'Page size (default 20)' })
   @Get()
   listEntries(
     @CurrentUser() user: RequestUser,
@@ -106,11 +97,8 @@ export class EntriesController {
     return this.entriesService.listEntries(user.id, connectionId, dto);
   }
 
-  /**
-   * GET /v1/connections/:id/entries/:entryId
-   * Returns entry with 1-hour signed media URL for playback.
-   * Expired entries (>24h) return is_expired:true and no media_url.
-   */
+  @ApiOperation({ summary: 'Get entry with media URL', description: 'Returns entry with a 1-hour signed media URL. Entries older than 24 h return is_expired:true and no media_url.' })
+  @ApiParam({ name: 'entryId', description: 'Entry UUID' })
   @Get(':entryId')
   getEntry(
     @CurrentUser() user: RequestUser,
@@ -120,11 +108,8 @@ export class EntriesController {
     return this.entriesService.getEntry(user.id, connectionId, entryId);
   }
 
-  /**
-   * GET /v1/connections/:id/entries/:entryId/moments
-   * Same as getEntry but bypasses the 24-hour diary expiry.
-   * Used exclusively by the Memory Tree to play old moments.
-   */
+  @ApiOperation({ summary: 'Get entry for Memory Tree', description: 'Same as GET /:entryId but bypasses the 24 h expiry — always returns a playback URL. Used exclusively by Memory Tree.' })
+  @ApiParam({ name: 'entryId', description: 'Entry UUID' })
   @Get(':entryId/moments')
   getEntryForMoments(
     @CurrentUser() user: RequestUser,
@@ -134,10 +119,8 @@ export class EntriesController {
     return this.entriesService.getEntryForMoments(user.id, connectionId, entryId);
   }
 
-  /**
-   * PATCH /v1/connections/:id/entries/:entryId/star
-   * Stars or unstars an entry for the Memory Jar.
-   */
+  @ApiOperation({ summary: 'Star / unstar entry', description: 'Stars or unstars an entry for the Memory Jar.' })
+  @ApiParam({ name: 'entryId', description: 'Entry UUID' })
   @Patch(':entryId/star')
   @HttpCode(HttpStatus.OK)
   starEntry(
@@ -154,11 +137,8 @@ export class EntriesController {
     );
   }
 
-  /**
-   * PATCH /v1/connections/:id/entries/:entryId/save-to-moments
-   * Marks a text message as intentionally saved to the Memory Tree.
-   * Audio/video entries appear automatically; text only appears when explicitly saved.
-   */
+  @ApiOperation({ summary: 'Save text to Memory Tree', description: 'Marks a text message as saved to the Memory Tree. Voice/video appear automatically; text only appears when explicitly saved.' })
+  @ApiParam({ name: 'entryId', description: 'Entry UUID' })
   @Patch(':entryId/save-to-moments')
   @HttpCode(HttpStatus.OK)
   saveToMoments(
@@ -169,10 +149,8 @@ export class EntriesController {
     return this.entriesService.saveToMoments(user.id, connectionId, entryId);
   }
 
-  /**
-   * DELETE /v1/connections/:id/entries/:entryId/save-to-moments
-   * Removes a text message from the Memory Tree (sets saved_to_moments = false).
-   */
+  @ApiOperation({ summary: 'Remove text from Memory Tree', description: 'Removes a text message from the Memory Tree (sets saved_to_moments = false).' })
+  @ApiParam({ name: 'entryId', description: 'Entry UUID' })
   @Delete(':entryId/save-to-moments')
   @HttpCode(HttpStatus.OK)
   removeFromMoments(
@@ -183,11 +161,8 @@ export class EntriesController {
     return this.entriesService.removeFromMoments(user.id, connectionId, entryId);
   }
 
-  /**
-   * DELETE /v1/connections/:id/entries/:entryId
-   * Soft-deletes only — media retained in R2 for 90 days.
-   * Only the author can delete. Voice memories are never immediately destroyed.
-   */
+  @ApiOperation({ summary: 'Delete entry', description: 'Soft-delete only — media retained in B2 for 90 days. Only the original author can delete.' })
+  @ApiParam({ name: 'entryId', description: 'Entry UUID' })
   @Delete(':entryId')
   @HttpCode(HttpStatus.OK)
   async softDeleteEntry(
@@ -199,11 +174,8 @@ export class EntriesController {
     return { message: 'Entry removed' };
   }
 
-  /**
-   * PATCH /v1/connections/:id/entries/:entryId/played
-   * Increments play_count — marks entry as "listened to".
-   * Used for unread_count calculation on the connections list.
-   */
+  @ApiOperation({ summary: 'Mark entry as played', description: 'Increments play_count — marks the entry as listened to. Used for unread_count calculation on the connections list.' })
+  @ApiParam({ name: 'entryId', description: 'Entry UUID' })
   @Patch(':entryId/played')
   @HttpCode(HttpStatus.OK)
   recordPlay(
