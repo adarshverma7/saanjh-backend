@@ -410,30 +410,6 @@ export class FlickerService {
     }
   }
 
-  /**
-   * When TranscriptionWorker finishes a voice note, push SSE to both users
-   * so the transcription text appears live without a page refresh.
-   * Emitted by the TranscriptionWorker (Prompt 09).
-   */
-  @OnEvent('transcription.ready')
-  async onTranscriptionReady(payload: {
-    entryId: string;
-    connectionId: string;
-    userAId: string;
-    userBId: string;
-  }): Promise<void> {
-    try {
-      this.eventsService.broadcastToConnection(
-        payload.connectionId,
-        payload.userAId,
-        payload.userBId,
-        { type: 'transcription_ready', entry_id: payload.entryId },
-      );
-    } catch (err: unknown) {
-      this.logger.error('onTranscriptionReady SSE push failed', err);
-    }
-  }
-
   // ── Private helpers ────────────────────────────────────────────────────────
 
   private async enforceRateLimit(

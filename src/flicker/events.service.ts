@@ -17,7 +17,7 @@ export type SaanjhEvent =
       thumbnail_url: string | null;
       url_expires_at: string | null;    // null for text entries
     }
-  | { type: 'transcription_ready'; entry_id: string }
+  | { type: 'transcription_ready'; entry_id: string; transcription: string }
   | { type: 'heartbeat' };
 
 // ── EventsService ─────────────────────────────────────────────────────────────

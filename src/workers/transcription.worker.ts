@@ -180,7 +180,7 @@ export class TranscriptionWorker {
         connectionId,
         user_a_id,
         user_b_id,
-        { type: 'transcription_ready', entry_id: entryId },
+        { type: 'transcription_ready', entry_id: entryId, transcription },
       );
     }
   }

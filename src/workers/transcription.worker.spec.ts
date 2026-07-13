@@ -105,7 +105,11 @@ describe('TranscriptionWorker', () => {
         CONN_ID,
         USER_A,
         USER_B,
-        expect.objectContaining({ type: 'transcription_ready', entry_id: ENTRY_ID }),
+        expect.objectContaining({
+          type: 'transcription_ready',
+          entry_id: ENTRY_ID,
+          transcription: 'यह एक परीक्षण है',
+        }),
       );
     });
 
