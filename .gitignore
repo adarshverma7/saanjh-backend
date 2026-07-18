@@ -6,6 +6,7 @@ dist/
 
 # Environment — NEVER commit real secrets
 .env
+.env.*
 .env.local
 .env.production
 
