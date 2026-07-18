@@ -84,6 +84,18 @@ const DIARY_EXPIRY_HOURS = 24;
 
 interface RateLimitRow { count: string }
 
+/**
+ * TypeORM's DataSource.query() returns the rows array directly for INSERT and
+ * SELECT, but a `[rows, affectedCount]` tuple for a plain UPDATE/DELETE ...
+ * RETURNING. Normalise both shapes to a plain rows array so `rows[0]` is always
+ * the first returned row (never the rows array itself).
+ */
+function returningRows<T>(result: unknown): T[] {
+  return Array.isArray(result) && Array.isArray(result[0])
+    ? (result[0] as T[])
+    : ((result ?? []) as T[]);
+}
+
 @Injectable()
 export class EntriesService {
   private readonly logger = new Logger(EntriesService.name);
@@ -223,7 +235,7 @@ export class EntriesService {
 
     const recordedAt = dto.recorded_at ? new Date(dto.recorded_at) : new Date();
 
-    const updated = await this.db.query<DbEntry[]>(
+    const updated = returningRows<DbEntry>(await this.db.query(
       `UPDATE diary_entries
        SET upload_status    = 'completed',
            duration_seconds = $1,
@@ -238,7 +250,7 @@ export class EntriesService {
                  is_starred, starred_at, play_count, recorded_at, created_at,
                  diary_expires_at, saved_to_moments, saved_to_moments_at`,
       [dto.duration_seconds, dto.mood ?? null, recordedAt, dto.entry_id],
-    );
+    ));
 
     const entry = updated[0];
 
@@ -583,7 +595,7 @@ export class EntriesService {
     entryId: string,
     isStarred: boolean,
   ): Promise<DiaryEntry> {
-    const rows = await this.db.query<DbEntry[]>(
+    const rows = returningRows<DbEntry>(await this.db.query(
       `UPDATE diary_entries
        SET is_starred = $1,
            starred_at = CASE WHEN $1 = true THEN NOW() ELSE NULL END,
@@ -597,7 +609,7 @@ export class EntriesService {
                  is_starred, starred_at, play_count, recorded_at, created_at,
                  diary_expires_at, saved_to_moments, saved_to_moments_at`,
       [isStarred, entryId, connectionId],
-    );
+    ));
 
     if (!rows.length) {
       throw new NotFoundException({
@@ -680,7 +692,7 @@ export class EntriesService {
     connectionId: string,
     entryId: string,
   ): Promise<{ play_count: number }> {
-    const rows = await this.db.query<{ play_count: number }[]>(
+    const rows = returningRows<{ play_count: number }>(await this.db.query(
       `UPDATE diary_entries
        SET play_count = play_count + 1, updated_at = NOW()
        WHERE id = $1
@@ -688,7 +700,7 @@ export class EntriesService {
          AND deleted_at IS NULL
        RETURNING play_count`,
       [entryId, connectionId],
-    );
+    ));
 
     if (!rows.length) {
       throw new NotFoundException({
@@ -707,7 +719,7 @@ export class EntriesService {
     connectionId: string,
     entryId: string,
   ): Promise<DiaryEntry> {
-    const rows = await this.db.query<DbEntry[]>(
+    const rows = returningRows<DbEntry>(await this.db.query(
       `UPDATE diary_entries
        SET saved_to_moments    = true,
            saved_to_moments_at = NOW(),
@@ -722,7 +734,7 @@ export class EntriesService {
                  is_starred, starred_at, play_count, recorded_at, created_at,
                  diary_expires_at, saved_to_moments, saved_to_moments_at`,
       [entryId, connectionId],
-    );
+    ));
 
     if (!rows.length) {
       throw new NotFoundException({
@@ -739,7 +751,7 @@ export class EntriesService {
     connectionId: string,
     entryId: string,
   ): Promise<DiaryEntry> {
-    const rows = await this.db.query<DbEntry[]>(
+    const rows = returningRows<DbEntry>(await this.db.query(
       `UPDATE diary_entries
        SET saved_to_moments    = false,
            saved_to_moments_at = NULL,
@@ -754,7 +766,7 @@ export class EntriesService {
                  is_starred, starred_at, play_count, recorded_at, created_at,
                  diary_expires_at, saved_to_moments, saved_to_moments_at`,
       [entryId, connectionId],
-    );
+    ));
 
     if (!rows.length) {
       throw new NotFoundException({
