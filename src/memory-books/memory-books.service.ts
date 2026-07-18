@@ -7,6 +7,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
+import { returningRows } from '../shared/database/query-utils';
 import { DataSource } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bull';
@@ -259,7 +260,7 @@ export class MemoryBooksService {
     }
 
     // Mark as paid
-    const updatedRows = await this.db.query<MemoryBookOrder[]>(
+    const updatedRows = returningRows<MemoryBookOrder>(await this.db.query(
       `UPDATE memory_book_orders
        SET payment_status = 'paid',
            paid_at = NOW(),
@@ -268,7 +269,7 @@ export class MemoryBooksService {
        WHERE id = $2
        RETURNING *`,
       [dto.razorpay_payment_id, orderId],
-    );
+    ));
 
     // Queue PDF generation
     await this.pdfQueue

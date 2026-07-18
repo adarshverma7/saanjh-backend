@@ -7,6 +7,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { randomUUID } from 'crypto';
 import { StorageService } from '../shared/storage/storage.service';
+import { returningRows } from '../shared/database/query-utils';
 import {
   encodeCursor,
   decodeCursor,
@@ -171,7 +172,7 @@ export class JournalService {
 
     const recordedAt = dto.recorded_at ? new Date(dto.recorded_at) : new Date();
 
-    const updated = await this.db.query<DbEntry[]>(
+    const updated = returningRows<DbEntry>(await this.db.query(
       `UPDATE personal_journal_entries
        SET upload_status    = 'completed',
            duration_seconds = $1,
@@ -181,7 +182,7 @@ export class JournalService {
        RETURNING id, user_id, entry_type, text_content, duration_seconds,
                  mood, is_starred, recorded_at, created_at`,
       [dto.duration_seconds ?? null, dto.mood ?? null, recordedAt, dto.entry_id],
-    );
+    ));
 
     return this.toPublic(updated[0]);
   }
@@ -335,7 +336,7 @@ export class JournalService {
     isStarred: boolean,
   ): Promise<JournalEntry> {
     // SECURITY: user_id = $3
-    const rows = await this.db.query<DbEntry[]>(
+    const rows = returningRows<DbEntry>(await this.db.query(
       `UPDATE personal_journal_entries
        SET is_starred = $1,
            starred_at = CASE WHEN $1 = true THEN NOW() ELSE NULL END
@@ -343,7 +344,7 @@ export class JournalService {
        RETURNING id, user_id, entry_type, text_content, duration_seconds,
                  mood, is_starred, recorded_at, created_at`,
       [isStarred, entryId, userId],
-    );
+    ));
 
     if (!rows.length) {
       throw new NotFoundException({
@@ -360,13 +361,13 @@ export class JournalService {
   async deleteEntry(userId: string, entryId: string): Promise<void> {
     // SECURITY: user_id = $2 — user can only delete their own entries
     // Soft delete only — same policy as shared diary
-    const result = await this.db.query<{ id: string }[]>(
+    const result = returningRows<{ id: string }>(await this.db.query(
       `UPDATE personal_journal_entries
        SET deleted_at = NOW()
        WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
        RETURNING id`,
       [entryId, userId],
-    );
+    ));
 
     if (!result.length) {
       throw new NotFoundException({

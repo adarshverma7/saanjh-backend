@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
+import { returningRows } from '../shared/database/query-utils';
 import { DataSource } from 'typeorm';
 import { maskPhone } from '../shared/helpers/phone.helper';
 
@@ -278,13 +279,13 @@ export class AdminService {
     isEnabled: boolean,
     rolloutPercentage: number,
   ): Promise<FeatureFlag> {
-    const rows = await this.db.query<FeatureFlag[]>(
+    const rows = returningRows<FeatureFlag>(await this.db.query(
       `UPDATE feature_flags
        SET is_enabled = $1, rollout_percentage = $2, updated_at = NOW()
        WHERE key = $3
        RETURNING key, is_enabled, rollout_percentage, description, updated_at`,
       [isEnabled, rolloutPercentage, key],
-    );
+    ));
 
     if (!rows.length) {
       throw new NotFoundException({ error: 'FLAG_NOT_FOUND', message: `Feature flag '${key}' not found` });

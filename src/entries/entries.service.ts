@@ -12,6 +12,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { StorageService } from '../shared/storage/storage.service';
+import { returningRows } from '../shared/database/query-utils';
 import { StreaksService, toISTDate } from '../streaks/streaks.service';
 import { EventsService } from '../flicker/events.service';
 import {
@@ -83,18 +84,6 @@ interface DbEntry extends DiaryEntry {
 const DIARY_EXPIRY_HOURS = 24;
 
 interface RateLimitRow { count: string }
-
-/**
- * TypeORM's DataSource.query() returns the rows array directly for INSERT and
- * SELECT, but a `[rows, affectedCount]` tuple for a plain UPDATE/DELETE ...
- * RETURNING. Normalise both shapes to a plain rows array so `rows[0]` is always
- * the first returned row (never the rows array itself).
- */
-function returningRows<T>(result: unknown): T[] {
-  return Array.isArray(result) && Array.isArray(result[0])
-    ? (result[0] as T[])
-    : ((result ?? []) as T[]);
-}
 
 @Injectable()
 export class EntriesService {

@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { TooManyRequestsException } from '../shared/exceptions/too-many-requests.exception';
 import { InjectDataSource } from '@nestjs/typeorm';
+import { returningRows } from '../shared/database/query-utils';
 import { DataSource } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
@@ -100,12 +101,12 @@ export class OccasionsService {
     connectionId: string,
     occasionId: string,
   ): Promise<void> {
-    const result = await this.db.query<{ id: string }[]>(
+    const result = returningRows<{ id: string }>(await this.db.query(
       `DELETE FROM occasions
        WHERE id = $1 AND connection_id = $2 AND created_by = $3
        RETURNING id`,
       [occasionId, connectionId, userId],
-    );
+    ));
 
     if (!result.length) {
       throw new NotFoundException({

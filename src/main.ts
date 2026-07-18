@@ -18,6 +18,16 @@ async function bootstrap(): Promise<void> {
     });
   }
 
+  // A single stray unhandled promise rejection crashes the whole process under
+  // Node's default policy — on Render that means a full restart and a ~50s cold
+  // start for the next users. Log it loudly (and forward to Sentry) instead of
+  // crashing, so a transient rejection during shutdown/deploy can't take the
+  // instance down while the real cause stays diagnosable.
+  process.on('unhandledRejection', (reason) => {
+    console.error('[unhandledRejection]', reason);
+    if (process.env.SENTRY_DSN) Sentry.captureException(reason);
+  });
+
   const app = await NestFactory.create(AppModule);
 
   // Security headers
@@ -105,4 +115,7 @@ async function bootstrap(): Promise<void> {
   console.log(`Swagger docs: http://localhost:${port}/docs`);
 }
 
-bootstrap();
+bootstrap().catch((err) => {
+  console.error('[bootstrap] fatal startup error', err);
+  process.exit(1);
+});

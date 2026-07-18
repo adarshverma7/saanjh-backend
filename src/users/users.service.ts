@@ -8,6 +8,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import * as crypto from 'crypto';
 import { StorageService } from '../shared/storage/storage.service';
+import { returningRows } from '../shared/database/query-utils';
 import { maskPhone } from '../shared/helpers/phone.helper';
 import type { UpdateProfileDto } from './dto/update-profile.dto';
 import type { UpdateSettingsDto } from './dto/update-settings.dto';
@@ -150,13 +151,13 @@ export class UsersService {
     fields.push(`updated_at = NOW()`);
     values.push(userId);
 
-    const rows = await this.db.query<DbUser[]>(
+    const rows = returningRows<DbUser>(await this.db.query(
       `UPDATE users SET ${fields.join(', ')}
        WHERE id = $${idx} AND deleted_at IS NULL
        RETURNING id, phone, name, language, timezone, avatar_key,
                  is_onboarded, is_verified, is_active, last_active_at, deleted_at`,
       values,
-    );
+    ));
 
     if (!rows.length) {
       throw new NotFoundException({ error: 'USER_NOT_FOUND', message: 'User not found' });
@@ -201,13 +202,13 @@ export class UsersService {
     const oldKey = current[0]?.avatar_key;
 
     // Update DB
-    const rows = await this.db.query<DbUser[]>(
+    const rows = returningRows<DbUser>(await this.db.query(
       `UPDATE users SET avatar_key = $1, updated_at = NOW()
        WHERE id = $2 AND deleted_at IS NULL
        RETURNING id, phone, name, language, timezone, avatar_key,
                  is_onboarded, is_verified, is_active, last_active_at, deleted_at`,
       [avatarKey, userId],
-    );
+    ));
 
     if (!rows.length) {
       throw new NotFoundException({ error: 'USER_NOT_FOUND', message: 'User not found' });
