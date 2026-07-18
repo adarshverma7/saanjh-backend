@@ -131,6 +131,30 @@ export class EntriesService {
     connectionId: string,
     dto: RequestUploadDto,
   ): Promise<RequestUploadResult> {
+    const clientMsgId = dto.client_msg_id ?? null;
+
+    // Idempotent retry: if this client_msg_id already has a row (from a prior
+    // request-upload whose response was lost), reuse it — hand back the same
+    // entry_id with a fresh presigned URL instead of creating a duplicate row
+    // and burning another rate-limit slot.
+    if (clientMsgId) {
+      const existing = await this.db.query<{ id: string; media_key: string }[]>(
+        `SELECT id, media_key FROM diary_entries
+         WHERE connection_id = $1 AND client_msg_id = $2 AND deleted_at IS NULL`,
+        [connectionId, clientMsgId],
+      );
+      if (existing.length) {
+        const uploadUrl = await this.storage.getSignedUploadUrl(existing[0].media_key);
+        const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+        return {
+          entry_id: existing[0].id,
+          media_key: existing[0].media_key,
+          upload_url: uploadUrl,
+          expires_at: expiresAt,
+        };
+      }
+    }
+
     // Rate limit: 30 uploads per connection per IST calendar day
     const istDate = toISTDate(new Date());
     const rlKey = `upload:${connectionId}:${istDate}`;
@@ -145,9 +169,9 @@ export class EntriesService {
     // Pre-create the pending entry so the ID is stable end-to-end
     await this.db.query(
       `INSERT INTO diary_entries
-         (id, connection_id, author_id, entry_type, media_key, upload_status)
-       VALUES ($1, $2, $3, $4, $5, 'pending')`,
-      [entryId, connectionId, userId, dto.entry_type, mediaKey],
+         (id, connection_id, author_id, entry_type, media_key, upload_status, client_msg_id)
+       VALUES ($1, $2, $3, $4, $5, 'pending', $6)`,
+      [entryId, connectionId, userId, dto.entry_type, mediaKey, clientMsgId],
     );
 
     const uploadUrl = await this.storage.getSignedUploadUrl(mediaKey);
@@ -353,32 +377,61 @@ export class EntriesService {
 
     // ── 2. Insert diary entry ─────────────────────────────────────────────────
     const recordedAt = dto.recorded_at ? new Date(dto.recorded_at) : new Date();
+    const clientMsgId = dto.client_msg_id ?? null;
 
+    // ON CONFLICT DO NOTHING makes the insert idempotent when the client sends a
+    // client_msg_id and retries a send whose response was lost — the second call
+    // inserts nothing and we return the already-stored entry (below), rather than
+    // creating a duplicate. The WHERE predicate matches the partial unique index.
     const rows = isText
       ? await this.db.query<DbEntry[]>(
           // Text messages: no media, no expiry, content stored inline
           `INSERT INTO diary_entries
-             (connection_id, author_id, entry_type, content, mood, recorded_at)
-           VALUES ($1, $2, $3, $4, $5, $6)
+             (connection_id, author_id, entry_type, content, mood, recorded_at, client_msg_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (connection_id, client_msg_id) WHERE client_msg_id IS NOT NULL DO NOTHING
            RETURNING id, connection_id, author_id, entry_type, content,
                      media_key, duration_seconds, file_size_bytes, thumbnail_key,
                      transcription, transcription_status, mood,
                      is_starred, starred_at, play_count, recorded_at, created_at,
                      diary_expires_at, saved_to_moments, saved_to_moments_at`,
-          [connectionId, userId, dto.entry_type, dto.content, dto.mood ?? null, recordedAt],
+          [connectionId, userId, dto.entry_type, dto.content, dto.mood ?? null, recordedAt, clientMsgId],
         )
       : await this.db.query<DbEntry[]>(
           `INSERT INTO diary_entries
              (connection_id, author_id, entry_type, media_key,
-              duration_seconds, mood, recorded_at, diary_expires_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $7::timestamptz + INTERVAL '${DIARY_EXPIRY_HOURS} hours')
+              duration_seconds, mood, recorded_at, diary_expires_at, client_msg_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $7::timestamptz + INTERVAL '${DIARY_EXPIRY_HOURS} hours', $8)
+           ON CONFLICT (connection_id, client_msg_id) WHERE client_msg_id IS NOT NULL DO NOTHING
            RETURNING id, connection_id, author_id, entry_type, content,
                      media_key, duration_seconds, file_size_bytes, thumbnail_key,
                      transcription, transcription_status, mood,
                      is_starred, starred_at, play_count, recorded_at, created_at,
                      diary_expires_at, saved_to_moments, saved_to_moments_at`,
-          [connectionId, userId, dto.entry_type, dto.media_key, dto.duration_seconds, dto.mood ?? null, recordedAt],
+          [connectionId, userId, dto.entry_type, dto.media_key, dto.duration_seconds, dto.mood ?? null, recordedAt, clientMsgId],
         );
+
+    // Idempotent hit: the row already exists from a prior (successful) send, so
+    // this is a retry. Return the stored entry and skip the counter/streak/SSE
+    // side-effects — they already ran the first time.
+    if (!rows.length) {
+      const existing = await this.db.query<DbEntry[]>(
+        `SELECT id, connection_id, author_id, entry_type, content,
+                media_key, duration_seconds, file_size_bytes, thumbnail_key,
+                transcription, transcription_status, mood,
+                is_starred, starred_at, play_count, recorded_at, created_at,
+                diary_expires_at, saved_to_moments, saved_to_moments_at
+         FROM diary_entries
+         WHERE connection_id = $1 AND client_msg_id = $2 AND deleted_at IS NULL`,
+        [connectionId, clientMsgId],
+      );
+      if (existing.length) return this.toPublic(existing[0]);
+      // Extremely unlikely (conflict with a soft-deleted row) — fail loud.
+      throw new BadRequestException({
+        error: 'DUPLICATE_MESSAGE',
+        message: 'This message was already sent.',
+      });
+    }
 
     const entry = rows[0];
 

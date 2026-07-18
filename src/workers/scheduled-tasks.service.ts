@@ -71,10 +71,19 @@ export class ScheduledTasksService {
       const entries = await this.db.query<
         { id: string; media_key: string; thumbnail_key: string | null }[]
       >(
+        // Two sources of orphaned blobs:
+        //  1. Entries soft-deleted more than 90 days ago (grace period elapsed).
+        //  2. Uploads that were marked 'failed' (abandoned mid-flow) more than
+        //     7 days ago — the client PUT may have landed a blob in B2 that the
+        //     confirm never claimed, leaving it orphaned. Deleting a non-existent
+        //     key is a harmless no-op.
         `SELECT id, media_key, thumbnail_key
          FROM diary_entries
-         WHERE deleted_at < NOW() - INTERVAL '90 days'
-           AND media_key IS NOT NULL`,
+         WHERE media_key IS NOT NULL
+           AND (
+             (deleted_at IS NOT NULL AND deleted_at < NOW() - INTERVAL '90 days')
+             OR (upload_status = 'failed' AND created_at < NOW() - INTERVAL '7 days')
+           )`,
       );
 
       if (!entries.length) return;

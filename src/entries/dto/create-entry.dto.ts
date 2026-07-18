@@ -14,6 +14,12 @@ export class CreateEntryDto {
   @IsIn(['voice', 'video', 'text'])
   entry_type: string;
 
+  /** Client-generated idempotency key. Reused across retries to dedup sends. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  client_msg_id?: string;
+
   /** R2 object key returned by POST .../upload-url — required for voice/video */
   @ValidateIf(o => o.entry_type !== 'text')
   @IsString()
