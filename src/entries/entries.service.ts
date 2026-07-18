@@ -228,8 +228,8 @@ export class EntriesService {
        SET upload_status    = 'completed',
            duration_seconds = $1,
            mood             = $2,
-           recorded_at      = $3,
-           diary_expires_at = $3 + INTERVAL '${DIARY_EXPIRY_HOURS} hours',
+           recorded_at      = $3::timestamptz,
+           diary_expires_at = $3::timestamptz + INTERVAL '${DIARY_EXPIRY_HOURS} hours',
            updated_at       = NOW()
        WHERE id = $4
        RETURNING id, connection_id, author_id, entry_type, content,
@@ -370,7 +370,7 @@ export class EntriesService {
           `INSERT INTO diary_entries
              (connection_id, author_id, entry_type, media_key,
               duration_seconds, mood, recorded_at, diary_expires_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $7 + INTERVAL '${DIARY_EXPIRY_HOURS} hours')
+           VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $7::timestamptz + INTERVAL '${DIARY_EXPIRY_HOURS} hours')
            RETURNING id, connection_id, author_id, entry_type, content,
                      media_key, duration_seconds, file_size_bytes, thumbnail_key,
                      transcription, transcription_status, mood,
