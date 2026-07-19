@@ -182,6 +182,17 @@ export class EntriesService {
     const uploadUrl = await this.storage.getSignedUploadUrl(mediaKey);
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 
+    // Fast delivery: tell the partner a memory is on its way NOW — before the
+    // media even starts uploading to object storage. Both devices reference
+    // the same entry id; the later new_entry event upgrades the placeholder
+    // in place with the playable URL. Delivery never waits on storage.
+    this.pushToPartner(userId, connectionId, {
+      type: 'entry_incoming',
+      entry_id: entryId,
+      author_id: userId,
+      entry_type: dto.entry_type,
+    }).catch(() => {});
+
     return { entry_id: entryId, media_key: mediaKey, upload_url: uploadUrl, expires_at: expiresAt };
   }
 
