@@ -812,7 +812,7 @@ export class EntriesService {
     connectionId: string,
     entryId: string,
     toConnectionId: string,
-  ): Promise<PublicEntry> {
+  ): Promise<DiaryEntry> {
     // Source entry must be visible to the forwarder.
     const src = await this.db.query<DbEntry[]>(
       `SELECT * FROM diary_entries
