@@ -18,6 +18,12 @@ import { UploadUrlDto } from './dto/upload-url.dto';
 import { CreateEntryDto } from './dto/create-entry.dto';
 import { ListEntriesDto } from './dto/list-entries.dto';
 import { StarEntryDto } from './dto/star-entry.dto';
+import {
+  CaptionDto,
+  ForwardEntryDto,
+  PinEntryDto,
+  ReactionDto,
+} from './dto/entry-actions.dto';
 import { RequestUploadDto } from './dto/request-upload.dto';
 import { ConfirmUploadDto } from './dto/confirm-upload.dto';
 import { JwtAuthGuard } from '../guards/jwt-auth.guard';
@@ -117,6 +123,81 @@ export class EntriesController {
     @Param('entryId') entryId: string,
   ) {
     return this.entriesService.getEntryForMoments(user.id, connectionId, entryId);
+  }
+
+  @ApiOperation({ summary: 'Toggle emoji reaction', description: 'One reaction per user; same emoji again removes it. Partner receives SSE reaction_updated.' })
+  @ApiParam({ name: 'entryId', description: 'Entry UUID' })
+  @Patch(':entryId/reaction')
+  @HttpCode(HttpStatus.OK)
+  async toggleReaction(
+    @CurrentUser() user: RequestUser,
+    @Param('id') connectionId: string,
+    @Param('entryId') entryId: string,
+    @Body() dto: ReactionDto,
+  ) {
+    const reactions = await this.entriesService.toggleReaction(
+      user.id, connectionId, entryId, dto.emoji,
+    );
+    return { reactions };
+  }
+
+  @ApiOperation({ summary: 'Pin / unpin entry', description: 'Shared pin — either member can pin. Partner receives SSE entry_pinned.' })
+  @ApiParam({ name: 'entryId', description: 'Entry UUID' })
+  @Patch(':entryId/pin')
+  @HttpCode(HttpStatus.OK)
+  async setPinned(
+    @CurrentUser() user: RequestUser,
+    @Param('id') connectionId: string,
+    @Param('entryId') entryId: string,
+    @Body() dto: PinEntryDto,
+  ) {
+    await this.entriesService.setPinned(user.id, connectionId, entryId, dto.is_pinned);
+    return { message: dto.is_pinned ? 'Pinned' : 'Unpinned' };
+  }
+
+  @ApiOperation({ summary: 'Set / clear caption', description: 'Author-only text annotation. Captured media is never editable.' })
+  @ApiParam({ name: 'entryId', description: 'Entry UUID' })
+  @Patch(':entryId/caption')
+  @HttpCode(HttpStatus.OK)
+  async setCaption(
+    @CurrentUser() user: RequestUser,
+    @Param('id') connectionId: string,
+    @Param('entryId') entryId: string,
+    @Body() dto: CaptionDto,
+  ) {
+    const caption = dto.caption?.trim();
+    await this.entriesService.setCaption(
+      user.id, connectionId, entryId, caption?.length ? caption : null,
+    );
+    return { message: 'Caption updated' };
+  }
+
+  @ApiOperation({ summary: 'Forward memory', description: 'Forwards to another of your diaries by sharing the original captured media — never re-uploaded, never editable.' })
+  @ApiParam({ name: 'entryId', description: 'Entry UUID' })
+  @Post(':entryId/forward')
+  @HttpCode(HttpStatus.OK)
+  forwardEntry(
+    @CurrentUser() user: RequestUser,
+    @Param('id') connectionId: string,
+    @Param('entryId') entryId: string,
+    @Body() dto: ForwardEntryDto,
+  ) {
+    return this.entriesService.forwardEntry(
+      user.id, connectionId, entryId, dto.to_connection_id,
+    );
+  }
+
+  @ApiOperation({ summary: 'Delete for me', description: 'Hides the entry from the current user only; the partner keeps it.' })
+  @ApiParam({ name: 'entryId', description: 'Entry UUID' })
+  @Delete(':entryId/for-me')
+  @HttpCode(HttpStatus.OK)
+  async hideForMe(
+    @CurrentUser() user: RequestUser,
+    @Param('id') connectionId: string,
+    @Param('entryId') entryId: string,
+  ) {
+    await this.entriesService.hideForMe(user.id, connectionId, entryId);
+    return { message: 'Hidden for you' };
   }
 
   @ApiOperation({ summary: 'Star / unstar entry', description: 'Stars or unstars an entry for the Memory Jar.' })

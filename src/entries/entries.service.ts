@@ -58,6 +58,10 @@ export interface DiaryEntry {
   created_at: Date;
   is_expired: boolean;
   diary_expires_at: Date | null;
+  reactions: Record<string, string[]>;
+  is_pinned: boolean;
+  caption: string | null;
+  forwarded_from: string | null;
   saved_to_moments: boolean;
   saved_to_moments_at: Date | null;
 }
@@ -131,6 +135,7 @@ export class EntriesService {
     connectionId: string,
     dto: RequestUploadDto,
   ): Promise<RequestUploadResult> {
+    await this.assertNotBlocked(userId, connectionId);
     const clientMsgId = dto.client_msg_id ?? null;
 
     // Idempotent retry: if this client_msg_id already has a row (from a prior
@@ -343,6 +348,7 @@ export class EntriesService {
     connectionId: string,
     dto: CreateEntryDto,
   ): Promise<DiaryEntry> {
+    await this.assertNotBlocked(userId, connectionId);
     const isText = dto.entry_type === 'text';
 
     if (!isText) {
@@ -479,16 +485,18 @@ export class EntriesService {
   // ── List Entries ───────────────────────────────────────────────────────────
 
   async listEntries(
-    _userId: string,
+    userId: string,
     connectionId: string,
     dto: ListEntriesDto,
   ): Promise<PageResult> {
     const limit = dto.limit ?? 20;
     const filter = dto.filter ?? 'all';
 
-    // Build query dynamically
-    const params: unknown[] = [connectionId];
-    let where = `WHERE connection_id = $1 AND deleted_at IS NULL AND upload_status = 'completed'`;
+    // Build query dynamically. hidden_for = delete-for-me: those entries are
+    // invisible to this user only.
+    const params: unknown[] = [connectionId, userId];
+    let where = `WHERE connection_id = $1 AND deleted_at IS NULL AND upload_status = 'completed'
+      AND NOT ($2 = ANY(hidden_for))`;
 
     // Type filter (safe to embed — validated by DTO)
     if (filter === 'voice') where += ` AND entry_type = 'voice'`;
@@ -516,7 +524,8 @@ export class EntriesService {
               transcription_status, mood, is_starred, starred_at,
               play_count, recorded_at, created_at,
               media_key, thumbnail_key, diary_expires_at,
-              saved_to_moments, saved_to_moments_at
+              saved_to_moments, saved_to_moments_at,
+              reactions, is_pinned, caption, forwarded_from
        FROM diary_entries
        ${where}
        ORDER BY recorded_at DESC, id DESC
@@ -663,6 +672,234 @@ export class EntriesService {
     return this.toPublic(rows[0]);
   }
 
+  // ── Messaging actions ──────────────────────────────────────────────────────
+
+  /** One reaction per user: reacting replaces any previous emoji; sending the
+   *  same emoji again removes it. Pushes reaction_updated to the partner. */
+  async toggleReaction(
+    userId: string,
+    connectionId: string,
+    entryId: string,
+    emoji: string,
+  ): Promise<Record<string, string[]>> {
+    const rows = await this.db.query<{ reactions: Record<string, string[]> }[]>(
+      `SELECT reactions FROM diary_entries
+       WHERE id = $1 AND connection_id = $2 AND deleted_at IS NULL`,
+      [entryId, connectionId],
+    );
+    if (!rows.length) {
+      throw new NotFoundException({ error: 'ENTRY_NOT_FOUND', message: 'Diary entry not found.' });
+    }
+
+    const reactions: Record<string, string[]> = rows[0].reactions ?? {};
+    const hadSame = (reactions[emoji] ?? []).includes(userId);
+    // Remove the user's existing reaction (any emoji), then re-add unless toggling off.
+    for (const key of Object.keys(reactions)) {
+      reactions[key] = reactions[key].filter((u) => u !== userId);
+      if (!reactions[key].length) delete reactions[key];
+    }
+    if (!hadSame) reactions[emoji] = [...(reactions[emoji] ?? []), userId];
+
+    await this.db.query(
+      `UPDATE diary_entries SET reactions = $1, updated_at = NOW() WHERE id = $2`,
+      [JSON.stringify(reactions), entryId],
+    );
+
+    await this.pushToPartner(userId, connectionId, {
+      type: 'reaction_updated',
+      entry_id: entryId,
+      reactions,
+    });
+    return reactions;
+  }
+
+  /** Shared pin — either member can pin/unpin an entry in the thread. */
+  async setPinned(
+    userId: string,
+    connectionId: string,
+    entryId: string,
+    isPinned: boolean,
+  ): Promise<void> {
+    const rows = returningRows(
+      await this.db.query(
+        `UPDATE diary_entries
+         SET is_pinned = $1, pinned_at = CASE WHEN $1 THEN NOW() ELSE NULL END,
+             updated_at = NOW()
+         WHERE id = $2 AND connection_id = $3 AND deleted_at IS NULL
+         RETURNING id`,
+        [isPinned, entryId, connectionId],
+      ),
+    );
+    if (!rows.length) {
+      throw new NotFoundException({ error: 'ENTRY_NOT_FOUND', message: 'Diary entry not found.' });
+    }
+    await this.pushToPartner(userId, connectionId, {
+      type: 'entry_pinned',
+      entry_id: entryId,
+      is_pinned: isPinned,
+    });
+  }
+
+  /** Caption text on a captured memory — author-only. The media itself is
+   *  immutable; only this text annotation can ever be added or edited. */
+  async setCaption(
+    userId: string,
+    connectionId: string,
+    entryId: string,
+    caption: string | null,
+  ): Promise<void> {
+    const rows = returningRows(
+      await this.db.query(
+        `UPDATE diary_entries
+         SET caption = $1, updated_at = NOW()
+         WHERE id = $2 AND connection_id = $3 AND author_id = $4 AND deleted_at IS NULL
+         RETURNING id`,
+        [caption, entryId, connectionId, userId],
+      ),
+    );
+    if (!rows.length) {
+      throw new NotFoundException({
+        error: 'ENTRY_NOT_FOUND',
+        message: 'Entry not found, or you are not its author.',
+      });
+    }
+    await this.pushToPartner(userId, connectionId, {
+      type: 'caption_updated',
+      entry_id: entryId,
+      caption,
+    });
+  }
+
+  /** Delete-for-me: hides the entry from this user only. */
+  async hideForMe(
+    userId: string,
+    connectionId: string,
+    entryId: string,
+  ): Promise<void> {
+    const rows = returningRows(
+      await this.db.query(
+        `UPDATE diary_entries
+         SET hidden_for = array_append(hidden_for, $1), updated_at = NOW()
+         WHERE id = $2 AND connection_id = $3 AND deleted_at IS NULL
+           AND NOT ($1 = ANY(hidden_for))
+         RETURNING id`,
+        [userId, entryId, connectionId],
+      ),
+    );
+    if (!rows.length) {
+      throw new NotFoundException({
+        error: 'ENTRY_NOT_FOUND',
+        message: 'Entry not found or already hidden.',
+      });
+    }
+  }
+
+  /** Forwards a memory to another of the user's diaries. The captured media is
+   *  shared by key — never re-encoded, never editable. */
+  async forwardEntry(
+    userId: string,
+    connectionId: string,
+    entryId: string,
+    toConnectionId: string,
+  ): Promise<PublicEntry> {
+    // Source entry must be visible to the forwarder.
+    const src = await this.db.query<DbEntry[]>(
+      `SELECT * FROM diary_entries
+       WHERE id = $1 AND connection_id = $2 AND deleted_at IS NULL
+         AND NOT ($3 = ANY(hidden_for))`,
+      [entryId, connectionId, userId],
+    ).then((r) => (r.length ? r : Promise.reject(
+      new NotFoundException({ error: 'ENTRY_NOT_FOUND', message: 'Diary entry not found.' }))));
+
+    // Target: user must be a member of an active connection, and not blocked.
+    const target = await this.db.query<{ id: string }[]>(
+      `SELECT id FROM diary_connections
+       WHERE id = $1 AND status = 'active'
+         AND (user_a_id = $2 OR user_b_id = $2)`,
+      [toConnectionId, userId],
+    );
+    if (!target.length) {
+      throw new ForbiddenException({
+        error: 'NOT_CONNECTION_MEMBER',
+        message: 'You are not a member of the target diary.',
+      });
+    }
+    await this.assertNotBlocked(userId, toConnectionId);
+
+    const e = src[0];
+    const inserted = await this.db.query<DbEntry[]>(
+      `INSERT INTO diary_entries
+         (connection_id, author_id, entry_type, content, media_key, thumbnail_key,
+          duration_seconds, file_size_bytes, caption, forwarded_from,
+          upload_status, recorded_at, diary_expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+               'completed', NOW(), NOW() + interval '24 hours')
+       RETURNING *`,
+      [
+        toConnectionId, userId, e.entry_type, e.content, e.media_key,
+        e.thumbnail_key, e.duration_seconds, e.file_size_bytes, e.caption, e.id,
+      ],
+    );
+    const fwd = inserted[0];
+
+    // Notify the target partner exactly like a fresh entry.
+    try {
+      const mediaUrl = fwd.media_key
+        ? await this.storage.getSignedDownloadUrl(fwd.media_key, 3600)
+        : null;
+      await this.pushToPartner(userId, toConnectionId, {
+        type: 'new_entry',
+        entry_id: fwd.id,
+        author_id: userId,
+        entry_type: fwd.entry_type,
+        duration_seconds: fwd.duration_seconds,
+        media_url: mediaUrl,
+        forwarded: true,
+      });
+    } catch (err: unknown) {
+      this.logger.error('SSE forward push failed', err);
+    }
+    await this.writeAuditLog(userId, 'entry.forwarded', 'diary_entry', fwd.id);
+    return this.toPublic(fwd);
+  }
+
+  /** 403 USER_BLOCKED if either side of the connection has blocked the other. */
+  async assertNotBlocked(_userId: string, connectionId: string): Promise<void> {
+    const rows = await this.db.query<{ n: string }[]>(
+      `SELECT COUNT(*) AS n
+       FROM user_blocks b
+       JOIN diary_connections c ON c.id = $1
+       WHERE (b.blocker_id = c.user_a_id AND b.blocked_id = c.user_b_id)
+          OR (b.blocker_id = c.user_b_id AND b.blocked_id = c.user_a_id)`,
+      [connectionId],
+    );
+    if (Number(rows[0]?.n ?? 0) > 0) {
+      throw new ForbiddenException({
+        error: 'USER_BLOCKED',
+        message: 'Memories cannot be exchanged in this diary.',
+      });
+    }
+  }
+
+  private async pushToPartner(
+    userId: string,
+    connectionId: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const rows = await this.db.query<{ user_a_id: string; user_b_id: string }[]>(
+      `SELECT user_a_id, user_b_id FROM diary_connections WHERE id = $1`,
+      [connectionId],
+    );
+    if (!rows.length) return;
+    const { user_a_id, user_b_id } = rows[0];
+    const partnerId = user_a_id === userId ? user_b_id : user_a_id;
+    try {
+      this.eventsService.push(partnerId, connectionId, payload as never);
+    } catch (err: unknown) {
+      this.logger.error('SSE push failed', err);
+    }
+  }
+
   // ── Soft Delete ────────────────────────────────────────────────────────────
 
   async softDeleteEntry(
@@ -692,6 +929,17 @@ export class EntriesService {
       });
     }
 
+    // Delete-for-everyone is only allowed within a window of sending; after
+    // that the memory belongs to both people (use delete-for-me instead).
+    const windowMin = Number(process.env.DELETE_FOR_EVERYONE_WINDOW_MIN ?? 60);
+    const ageMs = Date.now() - new Date(ownerRows[0].recorded_at).getTime();
+    if (ageMs > windowMin * 60 * 1000) {
+      throw new ForbiddenException({
+        error: 'DELETE_WINDOW_EXPIRED',
+        message: `Memories can only be deleted for everyone within ${windowMin} minutes of sending.`,
+      });
+    }
+
     // Soft delete — never hard delete emotional data
     await this.db.query(
       `UPDATE diary_entries
@@ -699,6 +947,11 @@ export class EntriesService {
        WHERE id = $1`,
       [entryId],
     );
+
+    await this.pushToPartner(userId, connectionId, {
+      type: 'entry_deleted',
+      entry_id: entryId,
+    });
 
     // Audit log
     await this.writeAuditLog(userId, 'entry.deleted', 'diary_entry', entryId);
@@ -880,6 +1133,10 @@ export class EntriesService {
       diary_expires_at: entry.diary_expires_at,
       saved_to_moments: entry.saved_to_moments ?? false,
       saved_to_moments_at: entry.saved_to_moments_at ?? null,
+      reactions: entry.reactions ?? {},
+      is_pinned: entry.is_pinned ?? false,
+      caption: entry.caption ?? null,
+      forwarded_from: entry.forwarded_from ?? null,
     };
   }
 

@@ -471,6 +471,52 @@ export class UsersService {
         this.logger.error('Audit log write failed', err);
       });
   }
+
+  // ── Blocks & Reports ───────────────────────────────────────────────────────
+
+  async blockUser(blockerId: string, blockedId: string): Promise<void> {
+    if (blockerId === blockedId) {
+      throw new BadRequestException({ error: 'CANNOT_BLOCK_SELF', message: 'You cannot block yourself.' });
+    }
+    await this.db.query(
+      `INSERT INTO user_blocks (blocker_id, blocked_id)
+       VALUES ($1, $2) ON CONFLICT (blocker_id, blocked_id) DO NOTHING`,
+      [blockerId, blockedId],
+    );
+    await this.writeAuditLog(blockerId, 'user.blocked', 'user', blockedId);
+  }
+
+  async unblockUser(blockerId: string, blockedId: string): Promise<void> {
+    await this.db.query(
+      `DELETE FROM user_blocks WHERE blocker_id = $1 AND blocked_id = $2`,
+      [blockerId, blockedId],
+    );
+    await this.writeAuditLog(blockerId, 'user.unblocked', 'user', blockedId);
+  }
+
+  async listBlocks(blockerId: string): Promise<{ blocked: unknown[] }> {
+    const rows = await this.db.query(
+      `SELECT b.blocked_id, u.name, b.created_at
+       FROM user_blocks b JOIN users u ON u.id = b.blocked_id
+       WHERE b.blocker_id = $1 ORDER BY b.created_at DESC`,
+      [blockerId],
+    );
+    return { blocked: rows };
+  }
+
+  async reportUser(
+    reporterId: string,
+    reportedId: string,
+    reason: string,
+    details: string | null,
+  ): Promise<void> {
+    await this.db.query(
+      `INSERT INTO user_reports (reporter_id, reported_id, reason, details)
+       VALUES ($1, $2, $3, $4)`,
+      [reporterId, reportedId, String(reason).slice(0, 50), details],
+    );
+    await this.writeAuditLog(reporterId, 'user.reported', 'user', reportedId);
+  }
 }
 
 // ── Module-level helper ────────────────────────────────────────────────────

@@ -72,6 +72,27 @@ export class FlickerService {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
+  /** Ephemeral "partner is capturing a memory" signal — SSE only, no storage. */
+  async signalRecording(
+    userId: string,
+    connectionId: string,
+    isRecording: boolean,
+    entryType: string,
+  ): Promise<void> {
+    const rows = await this.db.query<{ user_a_id: string; user_b_id: string }[]>(
+      `SELECT user_a_id, user_b_id FROM diary_connections WHERE id = $1`,
+      [connectionId],
+    );
+    if (!rows.length) return;
+    const partnerId =
+      rows[0].user_a_id === userId ? rows[0].user_b_id : rows[0].user_a_id;
+    this.eventsService.push(partnerId, connectionId, {
+      type: 'partner_recording',
+      is_recording: isRecording,
+      entry_type: entryType,
+    });
+  }
+
   // ── Send Flicker ───────────────────────────────────────────────────────────
 
   async sendFlicker(

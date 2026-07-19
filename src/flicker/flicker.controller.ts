@@ -4,6 +4,7 @@ import {
   Post,
   Param,
   Query,
+  Body,
   HttpCode,
   HttpStatus,
   UseGuards,
@@ -89,6 +90,24 @@ export class FlickerController {
     @Param('id') connectionId: string,
   ) {
     return this.flickerService.sendFlicker(user.id, connectionId);
+  }
+
+  @ApiOperation({ summary: 'Recording indicator', description: 'Ephemeral "capturing a memory" signal pushed to the partner over SSE. Not stored.' })
+  @Post(':id/recording')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, ConnectionMemberGuard)
+  async signalRecording(
+    @CurrentUser() user: RequestUser,
+    @Param('id') connectionId: string,
+    @Body() body: { is_recording?: boolean; entry_type?: string },
+  ) {
+    await this.flickerService.signalRecording(
+      user.id,
+      connectionId,
+      body.is_recording === true,
+      typeof body.entry_type === 'string' ? body.entry_type : 'voice',
+    );
+    return { message: 'ok' };
   }
 
   // ── Flicker Status ─────────────────────────────────────────────────────────

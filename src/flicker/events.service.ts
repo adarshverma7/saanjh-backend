@@ -18,6 +18,11 @@ export type SaanjhEvent =
       url_expires_at: string | null;    // null for text entries
     }
   | { type: 'transcription_ready'; entry_id: string; transcription: string }
+  | { type: 'reaction_updated'; entry_id: string; reactions: Record<string, string[]> }
+  | { type: 'entry_pinned'; entry_id: string; is_pinned: boolean }
+  | { type: 'caption_updated'; entry_id: string; caption: string | null }
+  | { type: 'entry_deleted'; entry_id: string }
+  | { type: 'partner_recording'; is_recording: boolean; entry_type: string }
   | { type: 'heartbeat' };
 
 // ── EventsService ─────────────────────────────────────────────────────────────

@@ -350,12 +350,19 @@ export class ConnectionsService {
     const nameForA = inviterIsA ? invite.connection_name : connectionName;
     const nameForB = inviterIsA ? connectionName : invite.connection_name;
 
-    // Create the connection
+    // Create the connection. If the pair previously ended a diary, the
+    // uq_connection_pair row still exists — reactivate it instead of failing.
     const connRows = await this.db.query<{ id: string }[]>(
       `INSERT INTO diary_connections
          (user_a_id, user_b_id, relationship_type, initiated_by,
           status, name_for_a, name_for_b)
        VALUES ($1, $2, $3, $4, 'active', $5, $6)
+       ON CONFLICT (user_a_id, user_b_id) DO UPDATE SET
+         status = 'active',
+         relationship_type = EXCLUDED.relationship_type,
+         name_for_a = EXCLUDED.name_for_a,
+         name_for_b = EXCLUDED.name_for_b,
+         updated_at = NOW()
        RETURNING id`,
       [
         userAId,
@@ -560,6 +567,10 @@ export class ConnectionsService {
          (user_a_id, user_b_id, relationship_type, initiated_by,
           status, name_for_a, name_for_b)
        VALUES ($1, $2, $3, $4, 'active', $5, $6)
+       ON CONFLICT (user_a_id, user_b_id) DO UPDATE SET
+         status = 'active',
+         relationship_type = EXCLUDED.relationship_type,
+         updated_at = NOW()
        RETURNING id`,
       [
         userAId,

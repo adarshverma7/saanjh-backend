@@ -4,6 +4,8 @@ import {
   Put,
   Post,
   Patch,
+  Delete,
+  Param,
   Body,
   HttpCode,
   HttpStatus,
@@ -118,5 +120,52 @@ export class UsersController {
       message:
         'Your data export has been queued. You will receive a notification when it is ready.',
     };
+  }
+
+  // ── Blocks & Reports ───────────────────────────────────────────────────────
+
+  @ApiTags('Safety')
+  @ApiOperation({ summary: 'Block user', description: 'Blocked pairs cannot exchange new memories in any shared diary (enforced server-side on every send).' })
+  @Post('users/block')
+  @HttpCode(HttpStatus.OK)
+  async blockUser(
+    @CurrentUser() user: RequestUser,
+    @Body() body: { user_id: string },
+  ) {
+    await this.usersService.blockUser(user.id, body.user_id);
+    return { message: 'User blocked' };
+  }
+
+  @ApiTags('Safety')
+  @ApiOperation({ summary: 'Unblock user' })
+  @Delete('users/block/:userId')
+  @HttpCode(HttpStatus.OK)
+  async unblockUser(
+    @CurrentUser() user: RequestUser,
+    @Param('userId') blockedId: string,
+  ) {
+    await this.usersService.unblockUser(user.id, blockedId);
+    return { message: 'User unblocked' };
+  }
+
+  @ApiTags('Safety')
+  @ApiOperation({ summary: 'List my blocks' })
+  @Get('users/blocks')
+  listBlocks(@CurrentUser() user: RequestUser) {
+    return this.usersService.listBlocks(user.id);
+  }
+
+  @ApiTags('Safety')
+  @ApiOperation({ summary: 'Report user', description: 'Files an abuse report for review. Does not block by itself.' })
+  @Post('users/report')
+  @HttpCode(HttpStatus.OK)
+  async reportUser(
+    @CurrentUser() user: RequestUser,
+    @Body() body: { user_id: string; reason: string; details?: string },
+  ) {
+    await this.usersService.reportUser(
+      user.id, body.user_id, body.reason, body.details ?? null,
+    );
+    return { message: 'Report received' };
   }
 }
