@@ -11,6 +11,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { OnEvent } from '@nestjs/event-emitter';
 import { StorageService } from '../shared/storage/storage.service';
+import { returningRows } from '../shared/database/query-utils';
 import {
   normalizePhone,
   hashPhone,
@@ -779,6 +780,29 @@ export class ConnectionsService {
          AND (user_a_id = $1 OR user_b_id = $1)`,
       [userId, name.trim(), connectionId],
     );
+  }
+
+  /// Soft-deletes the connection for BOTH users. Every list/read query
+  /// filters on status = 'active', so an 'ended' row vanishes from both
+  /// sides while entries stay in the DB for potential recovery/export.
+  async endConnection(userId: string, connectionId: string): Promise<void> {
+    const rows = returningRows(
+      await this.db.query(
+        `UPDATE diary_connections
+         SET status = 'ended', updated_at = NOW()
+         WHERE id = $1
+           AND (user_a_id = $2 OR user_b_id = $2)
+           AND status = 'active'
+         RETURNING id`,
+        [connectionId, userId],
+      ),
+    );
+    if (!rows.length) {
+      throw new NotFoundException({
+        error: 'CONNECTION_NOT_FOUND',
+        message: 'Connection not found or already ended.',
+      });
+    }
   }
 
   // ── My invites ─────────────────────────────────────────────────────────────

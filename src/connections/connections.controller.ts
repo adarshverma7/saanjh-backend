@@ -167,6 +167,22 @@ export class ConnectionsController {
     return { message: 'Connection renamed' };
   }
 
+  @ApiBearerAuth('JWT')
+  @ApiOperation({ summary: 'Delete connection', description: 'Ends the diary connection for both users (soft delete — status becomes "ended" and it disappears from both users\' lists). Entries are retained server-side.' })
+  @ApiParam({ name: 'id', description: 'Connection UUID' })
+  @ApiResponse({ status: 200, description: 'Connection ended' })
+  @ApiResponse({ status: 404, description: 'Connection not found or already ended' })
+  @Delete('connections/:id')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, ConnectionMemberGuard)
+  async deleteConnection(
+    @CurrentUser() user: RequestUser,
+    @Param('id') connectionId: string,
+  ): Promise<{ message: string }> {
+    await this.connectionsService.endConnection(user.id, connectionId);
+    return { message: 'Connection ended' };
+  }
+
   // ── My invites ─────────────────────────────────────────────────────────────
 
   @ApiBearerAuth('JWT')
