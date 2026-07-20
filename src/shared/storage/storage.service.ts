@@ -163,6 +163,12 @@ export class StorageService {
     return `entries/journal/${userId}/${year}/${month}/${entryId}.m4a`;
   }
 
+  static storyKey(userId: string, storyId: string, mediaType: string): string {
+    const { year, month } = ymNow();
+    const ext = mediaType === 'photo' ? 'jpg' : mediaType === 'video' ? 'mp4' : 'm4a';
+    return `stories/${userId}/${year}/${month}/${storyId}.${ext}`;
+  }
+
   static avatarKey(userId: string): string {
     return `avatars/${userId}/${Date.now()}.jpg`;
   }

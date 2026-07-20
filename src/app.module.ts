@@ -20,6 +20,7 @@ import { UsersModule } from './users/users.module';
 import { ConnectionsModule } from './connections/connections.module';
 import { EntriesModule } from './entries/entries.module';
 import { FlickerModule } from './flicker/flicker.module';
+import { StoriesModule } from './stories/stories.module';
 import { MemoryTreeModule } from './memory-tree/memory-tree.module';
 import { OnThisDayModule } from './on-this-day/on-this-day.module';
 import { MemoryJarModule } from './memory-jar/memory-jar.module';
@@ -101,6 +102,7 @@ const bullLogger = new Logger('BullModule');
     ConnectionsModule,
     EntriesModule,
     FlickerModule,
+    StoriesModule,
     MemoryTreeModule,
     OnThisDayModule,
     MemoryJarModule,

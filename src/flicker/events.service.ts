@@ -24,6 +24,7 @@ export type SaanjhEvent =
   | { type: 'entry_deleted'; entry_id: string }
   | { type: 'partner_recording'; is_recording: boolean; entry_type: string }
   | { type: 'entry_incoming'; entry_id: string; author_id: string; entry_type: string }
+  | { type: 'story_added'; story_id: string; user_id: string }
   | { type: 'heartbeat' };
 
 // ── EventsService ─────────────────────────────────────────────────────────────
