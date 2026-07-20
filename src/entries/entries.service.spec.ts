@@ -50,7 +50,9 @@ describe('EntriesService', () => {
   let mockEventsService: { push: jest.Mock };
 
   beforeEach(async () => {
-    mockDb = { query: jest.fn() };
+    // Default to an empty result set so incidental queries (block check,
+    // audit log, cache invalidation, SSE partner lookup) resolve harmlessly.
+    mockDb = { query: jest.fn().mockResolvedValue([]) };
     mockStorage = {
       objectExists: jest.fn().mockResolvedValue(true),
       getSignedUploadUrl: jest.fn().mockResolvedValue('https://r2.upload.url'),
@@ -140,8 +142,8 @@ describe('EntriesService', () => {
 
     function setupHappyPath() {
       // Streak logic is now handled by StreaksService (mocked above).
-      // EntriesService only does: INSERT entry, UPDATE counters, cache delete, audit log.
       mockDb.query
+        .mockResolvedValueOnce([{ n: '0' }])     // assertNotBlocked count
         .mockResolvedValueOnce([makeDbEntry()])  // INSERT entry RETURNING
         .mockResolvedValueOnce([])               // UPDATE connection counters
         .mockResolvedValueOnce([])               // DELETE memory_tree_cache
@@ -325,6 +327,7 @@ describe('EntriesService', () => {
       mockDb.query
         .mockResolvedValueOnce([{ author_id: AUTHOR_ID, recorded_at: new Date() }]) // find entry
         .mockResolvedValueOnce([])   // SET deleted_at
+        .mockResolvedValueOnce([])   // partner lookup (SSE push)
         .mockResolvedValueOnce([])   // audit log
         .mockResolvedValueOnce([])   // update last_entry_at
         .mockResolvedValueOnce([]);  // delete cache
@@ -385,6 +388,7 @@ describe('EntriesService', () => {
 
     it('delegates streak update to StreaksService.onNewEntry()', async () => {
       mockDb.query
+        .mockResolvedValueOnce([{ n: '0' }])     // assertNotBlocked count
         .mockResolvedValueOnce([makeDbEntry()])  // INSERT entry
         .mockResolvedValueOnce([])               // UPDATE counters
         .mockResolvedValueOnce([])               // DELETE cache
@@ -408,6 +412,7 @@ describe('EntriesService', () => {
       );
 
       mockDb.query
+        .mockResolvedValueOnce([{ n: '0' }])     // assertNotBlocked count
         .mockResolvedValueOnce([makeDbEntry()])
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([])
