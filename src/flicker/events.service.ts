@@ -25,6 +25,19 @@ export type SaanjhEvent =
   | { type: 'partner_recording'; is_recording: boolean; entry_type: string }
   | { type: 'entry_incoming'; entry_id: string; author_id: string; entry_type: string }
   | { type: 'story_added'; story_id: string; user_id: string }
+  | {
+      // Canonical Flicker relationship state, pushed to BOTH users from one
+      // server-side computation. Clients render this verbatim rather than
+      // inferring state from event timing, which is what let the two devices
+      // disagree (one showing mutual while the other showed a single flicker).
+      type: 'flicker_state';
+      connection_id: string;
+      current_state: 'idle' | 'i_sent' | 'they_sent' | 'mutual';
+      is_mutual: boolean;
+      my_last_flicker_at: string | null;
+      partner_last_flicker_at: string | null;
+      version: number;
+    }
   | { type: 'heartbeat' };
 
 // ── EventsService ─────────────────────────────────────────────────────────────

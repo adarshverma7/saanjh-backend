@@ -4,6 +4,7 @@ import { DataSource } from 'typeorm';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { EventsService } from './events.service';
 import { TooManyRequestsException } from '../shared/exceptions/too-many-requests.exception';
+import { toISTDate } from '../streaks/streaks.service';
 
 // ── Public interfaces ────────────────────────────────────────────────────────
 
@@ -50,8 +51,23 @@ interface DbFlicker {
 
 interface RateLimitRow { count: string }
 
-/** 5-minute mutual reveal window in seconds */
+/** 5-minute mutual reveal window in seconds — drives the "reveal" animation only. */
 const MUTUAL_WINDOW_SECS = 300;
+
+/**
+ * The canonical, symmetric state of one Flicker relationship for the current
+ * IST day. Computed from a single DB read so both users can never disagree:
+ * every SSE payload and every status response is derived from this one object.
+ */
+export interface RelationshipState {
+  user_a_id: string;
+  user_b_id: string;
+  a_last_flicker_at: Date | null;
+  b_last_flicker_at: Date | null;
+  is_mutual: boolean;
+  /** Monotonic version — max(sent_at) of the pair today. Lets clients drop stale events. */
+  version: number;
+}
 
 @Injectable()
 export class FlickerService {
@@ -104,152 +120,207 @@ export class FlickerService {
     const rlKey = `flicker:${connectionId}:${senderId}:${hour}`;
     await this.enforceRateLimit(rlKey, 3600, 10, 'FLICKER_RATE_LIMIT');
 
-    // Find the receiver (the other user in this connection)
-    const connRows = await this.db.query<
-      { user_a_id: string; user_b_id: string }[]
-    >(
-      `SELECT user_a_id, user_b_id FROM diary_connections
-       WHERE id = $1 AND status = 'active'`,
-      [connectionId],
-    );
+    // The whole send runs in one transaction that takes a row lock on the
+    // connection. Two users flickering at the same instant are therefore
+    // serialised: the second one always observes the first one's row and
+    // computes the mutual state correctly. Without the lock, both could miss
+    // each other and neither side would ever be told it went mutual.
+    const runner = this.db.createQueryRunner();
+    await runner.connect();
+    await runner.startTransaction();
 
-    if (!connRows.length) {
-      throw new NotFoundException({
-        error: 'CONNECTION_NOT_FOUND',
-        message: 'Connection not found or inactive.',
-      });
+    let newFlickerId: string;
+    let sentAt: Date;
+    let receiverId: string;
+    let becameMutual = false;
+    let state: RelationshipState;
+
+    try {
+      const connRows = (await runner.query(
+        `SELECT user_a_id, user_b_id FROM diary_connections
+         WHERE id = $1 AND status = 'active'
+         FOR UPDATE`,
+        [connectionId],
+      )) as { user_a_id: string; user_b_id: string }[];
+
+      if (!connRows.length) {
+        throw new NotFoundException({
+          error: 'CONNECTION_NOT_FOUND',
+          message: 'Connection not found or inactive.',
+        });
+      }
+
+      const conn = connRows[0];
+      receiverId =
+        conn.user_a_id === senderId ? conn.user_b_id : conn.user_a_id;
+
+      const dayStart = istDayStart();
+
+      // Was the relationship already mutual before this flicker? Used to decide
+      // whether this send is the transition that reveals the mutual state.
+      const before = await this.readState(runner, connectionId, conn, dayStart);
+
+      const inserted = (await runner.query(
+        `INSERT INTO flicker_events
+           (connection_id, sender_id, receiver_id, sent_at)
+         VALUES ($1, $2, $3, NOW())
+         RETURNING id, sent_at`,
+        [connectionId, senderId, receiverId],
+      )) as { id: string; sent_at: Date }[];
+
+      newFlickerId = inserted[0].id;
+      sentAt = new Date(inserted[0].sent_at);
+
+      state = await this.readState(runner, connectionId, conn, dayStart);
+      becameMutual = state.is_mutual && !before.is_mutual;
+
+      if (becameMutual) {
+        // Mark today's pair as mutual so history reflects it. The daily state
+        // itself is always derived from timestamps, never from this flag.
+        await runner.query(
+          `UPDATE flicker_events
+           SET is_mutual = true, mutual_at = NOW()
+           WHERE connection_id = $1 AND sent_at >= $2 AND is_mutual = false`,
+          [connectionId, dayStart],
+        );
+      }
+
+      await runner.commitTransaction();
+    } catch (err: unknown) {
+      await runner.rollbackTransaction().catch(() => {});
+      throw err;
+    } finally {
+      await runner.release();
     }
 
-    const conn = connRows[0];
-    const receiverId =
-      conn.user_a_id === senderId ? conn.user_b_id : conn.user_a_id;
+    // ── Fan out the one canonical state to BOTH users ────────────────────────
+    // Every client updates from the same computation, so a mutual state can
+    // never appear on one device while the other still shows a single flicker.
+    this.broadcastState(connectionId, state);
 
-    // Insert flicker event
-    const flickerRows = await this.db.query<DbFlicker[]>(
-      `INSERT INTO flicker_events
-         (connection_id, sender_id, receiver_id, sent_at)
-       VALUES ($1, $2, $3, NOW())
-       RETURNING id, connection_id, sender_id, receiver_id, sent_at,
-                 is_mutual, mutual_at, mutual_window_secs`,
-      [connectionId, senderId, receiverId],
-    );
-
-    const newFlicker = flickerRows[0];
-    const sentAt = new Date(newFlicker.sent_at);
-    const windowClosesAt = new Date(
-      sentAt.getTime() + MUTUAL_WINDOW_SECS * 1000,
-    );
-
-    // ── Check mutual reveal ────────────────────────────────────────────────────
-    // Did the receiver send a flicker to us within the last 5 minutes?
-    const mutualRows = await this.db.query<{ id: string }[]>(
-      `SELECT id FROM flicker_events
-       WHERE sender_id = $1
-         AND receiver_id = $2
-         AND connection_id = $3
-         AND sent_at >= NOW() - (INTERVAL '1 second' * $4)
-         AND is_mutual = false
-       LIMIT 1`,
-      [receiverId, senderId, connectionId, MUTUAL_WINDOW_SECS],
-    );
-
-    // Did the partner flicker us at any point today (regardless of mutual window)?
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const partnerTodayRows = await this.db.query<{ id: string }[]>(
-      `SELECT id FROM flicker_events
-       WHERE sender_id = $1 AND receiver_id = $2
-         AND connection_id = $3 AND sent_at >= $4
-       LIMIT 1`,
-      [receiverId, senderId, connectionId, startOfDay],
-    );
-    const partnerFlickeredToday = partnerTodayRows.length > 0;
-
-    if (mutualRows.length) {
-      // ── Mutual reveal ──────────────────────────────────────────────────────
-      const mutualAt = new Date();
-
-      await this.db.query(
-        `UPDATE flicker_events
-         SET is_mutual = true, mutual_at = $1
-         WHERE id = ANY($2::uuid[])`,
-        [mutualAt, [newFlicker.id, mutualRows[0].id]],
-      );
-
-      // Invalidate status cache for both users
-      this.statusCache.delete(`${senderId}:${connectionId}`);
-      this.statusCache.delete(`${receiverId}:${connectionId}`);
-
-      // Push real-time SSE to both users simultaneously
-      const mutualEvent = {
-        type: 'mutual_reveal' as const,
-        mutual_at: mutualAt.toISOString(),
-      };
-      this.eventsService.broadcastToConnection(
-        connectionId,
-        senderId,
-        receiverId,
-        mutualEvent,
-      );
-
-      // Emit for NotificationWorker (Prompt 09)
-      this.eventEmitter.emit('flicker.mutual', {
-        connectionId,
-        senderId,
-        receiverId,
-        mutualAt,
-      });
-
-      this.logger.log(
-        `Mutual flicker: ${senderId} ↔ ${receiverId} in ${connectionId}`,
-      );
-
-      return {
-        flicker_id: newFlicker.id,
-        is_mutual: true,
-        mutual_at: mutualAt,
-        window_closes_at: windowClosesAt,
-        partner_flickered_today: true,
-      };
-    }
-
-    // ── Non-mutual: notify receiver ────────────────────────────────────────────
-
-    // Fetch sender's display name for the SSE event
     const senderRows = await this.db.query<{ name: string | null }[]>(
       `SELECT name FROM users WHERE id = $1`,
       [senderId],
     );
     const senderName = senderRows[0]?.name ?? 'Someone';
 
-    // Push real-time SSE to receiver (if online)
-    this.eventsService.push(receiverId, connectionId, {
-      type: 'flicker_received',
-      flicker_id: newFlicker.id,
-      sender_name: senderName,
-      sent_at: sentAt.toISOString(),
-    });
+    // Legacy events kept so older installed clients keep working unchanged.
+    if (becameMutual) {
+      this.eventsService.broadcastToConnection(connectionId, senderId, receiverId, {
+        type: 'mutual_reveal',
+        mutual_at: new Date().toISOString(),
+      });
+      this.eventEmitter.emit('flicker.mutual', {
+        connectionId,
+        senderId,
+        receiverId,
+        mutualAt: new Date(),
+      });
+      this.logger.log(
+        `Mutual flicker: ${senderId} ↔ ${receiverId} in ${connectionId}`,
+      );
+    } else {
+      this.eventsService.push(receiverId, connectionId, {
+        type: 'flicker_received',
+        flicker_id: newFlickerId,
+        sender_name: senderName,
+        sent_at: sentAt.toISOString(),
+      });
+      this.eventEmitter.emit('flicker.sent', {
+        connectionId,
+        senderId,
+        receiverId,
+        flickerId: newFlickerId,
+        senderName,
+      });
+    }
 
-    // Invalidate status cache
-    this.statusCache.delete(`${senderId}:${connectionId}`);
-    this.statusCache.delete(`${receiverId}:${connectionId}`);
+    const perspective = perspectiveOf(state, senderId);
+    return {
+      flicker_id: newFlickerId,
+      is_mutual: state.is_mutual,
+      mutual_at: state.is_mutual ? new Date() : null,
+      window_closes_at: new Date(sentAt.getTime() + MUTUAL_WINDOW_SECS * 1000),
+      partner_flickered_today: perspective.partner_last_flicker_at !== null,
+    };
+  }
 
-    // Emit for NotificationWorker (Prompt 09)
-    this.eventEmitter.emit('flicker.sent', {
-      connectionId,
-      senderId,
-      receiverId,
-      flickerId: newFlicker.id,
-      senderName,
-    });
+  // ── Canonical relationship state ───────────────────────────────────────────
+
+  /**
+   * Reads today's flicker timestamps for both users in one pass. This is the
+   * single source of truth: sendFlicker, getFlickerStatus and every SSE payload
+   * all derive from it, so the two clients cannot drift apart.
+   */
+  private async readState(
+    runner: { query: (sql: string, params?: unknown[]) => Promise<unknown> },
+    connectionId: string,
+    conn: { user_a_id: string; user_b_id: string },
+    dayStart: Date,
+  ): Promise<RelationshipState> {
+    const rows = (await runner.query(
+      `SELECT sender_id, MAX(sent_at) AS last_at
+       FROM flicker_events
+       WHERE connection_id = $1 AND sent_at >= $2
+       GROUP BY sender_id`,
+      [connectionId, dayStart],
+    )) as { sender_id: string; last_at: Date }[];
+
+    let aAt: Date | null = null;
+    let bAt: Date | null = null;
+    for (const r of rows) {
+      if (r.sender_id === conn.user_a_id) aAt = new Date(r.last_at);
+      if (r.sender_id === conn.user_b_id) bAt = new Date(r.last_at);
+    }
 
     return {
-      flicker_id: newFlicker.id,
-      is_mutual: false,
-      mutual_at: null,
-      window_closes_at: windowClosesAt,
-      partner_flickered_today: partnerFlickeredToday,
+      user_a_id: conn.user_a_id,
+      user_b_id: conn.user_b_id,
+      a_last_flicker_at: aAt,
+      b_last_flicker_at: bAt,
+      is_mutual: aAt !== null && bAt !== null,
+      version: Math.max(aAt?.getTime() ?? 0, bAt?.getTime() ?? 0),
     };
+  }
+
+  /** Loads the canonical state for a connection outside a transaction. */
+  private async loadState(connectionId: string): Promise<RelationshipState> {
+    const connRows = await this.db.query<
+      { user_a_id: string; user_b_id: string }[]
+    >(
+      `SELECT user_a_id, user_b_id FROM diary_connections WHERE id = $1`,
+      [connectionId],
+    );
+    if (!connRows.length) {
+      throw new NotFoundException({
+        error: 'CONNECTION_NOT_FOUND',
+        message: 'Connection not found.',
+      });
+    }
+    return this.readState(this.db, connectionId, connRows[0], istDayStart());
+  }
+
+  /**
+   * Pushes each user their own view of the same canonical state, and drops
+   * both cached statuses so any follow-up poll agrees with what was just sent.
+   */
+  private broadcastState(connectionId: string, state: RelationshipState): void {
+    this.statusCache.delete(`${state.user_a_id}:${connectionId}`);
+    this.statusCache.delete(`${state.user_b_id}:${connectionId}`);
+
+    for (const userId of [state.user_a_id, state.user_b_id]) {
+      const p = perspectiveOf(state, userId);
+      this.eventsService.push(userId, connectionId, {
+        type: 'flicker_state',
+        connection_id: connectionId,
+        current_state: p.current_state,
+        is_mutual: state.is_mutual,
+        my_last_flicker_at: p.my_last_flicker_at?.toISOString() ?? null,
+        partner_last_flicker_at:
+          p.partner_last_flicker_at?.toISOString() ?? null,
+        version: state.version,
+      });
+    }
   }
 
   // ── Flicker Status ──────────────────────────────────────────────────────────
@@ -264,73 +335,25 @@ export class FlickerService {
       return cached.data;
     }
 
-    // Determine partner
-    const connRows = await this.db.query<
-      { user_a_id: string; user_b_id: string }[]
-    >(
-      `SELECT user_a_id, user_b_id FROM diary_connections WHERE id = $1`,
-      [connectionId],
-    );
+    // Same canonical computation the SSE payloads use — a poll can therefore
+    // never contradict an event the client already applied.
+    const state = await this.loadState(connectionId);
+    const p = perspectiveOf(state, userId);
 
-    if (!connRows.length) {
-      throw new NotFoundException({ error: 'CONNECTION_NOT_FOUND', message: 'Connection not found.' });
-    }
-
-    const conn = connRows[0];
-    const partnerId =
-      conn.user_a_id === userId ? conn.user_b_id : conn.user_a_id;
-
-    // My latest flicker to partner
-    const myRows = await this.db.query<{ sent_at: Date; is_mutual: boolean }[]>(
-      `SELECT sent_at, is_mutual FROM flicker_events
-       WHERE sender_id = $1 AND receiver_id = $2 AND connection_id = $3
-       ORDER BY sent_at DESC LIMIT 1`,
-      [userId, partnerId, connectionId],
-    );
-
-    // Partner's latest flicker to me
-    const partnerRows = await this.db.query<{ sent_at: Date }[]>(
-      `SELECT sent_at FROM flicker_events
-       WHERE sender_id = $1 AND receiver_id = $2 AND connection_id = $3
-       ORDER BY sent_at DESC LIMIT 1`,
-      [partnerId, userId, connectionId],
-    );
-
-    const myLast = myRows[0] ?? null;
-    const partnerLast = partnerRows[0] ?? null;
-
-    const nowMs = Date.now();
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-
-    // "Mutual today" means both users have flickered at any point today.
-    // The DB is_mutual flag only marks the 5-min real-time window — don't use it
-    // for the daily mutual display state.
-    const myFlickeredToday = myLast && new Date(myLast.sent_at) >= startOfDay;
-    const partnerFlickeredToday = partnerLast && new Date(partnerLast.sent_at) >= startOfDay;
-    const isMutual = !!(myFlickeredToday && partnerFlickeredToday);
-
-    // Active mutual-reveal window: only relevant if we sent recently but haven't become mutual yet.
+    // Active mutual-reveal window: only while we've sent but it isn't mutual yet.
     let windowClosesAt: Date | null = null;
-    if (myLast && !isMutual) {
-      const windowEnd = new Date(myLast.sent_at).getTime() + MUTUAL_WINDOW_SECS * 1000;
-      if (windowEnd > nowMs) {
-        windowClosesAt = new Date(windowEnd);
-      }
+    if (p.my_last_flicker_at && !state.is_mutual) {
+      const windowEnd =
+        p.my_last_flicker_at.getTime() + MUTUAL_WINDOW_SECS * 1000;
+      if (windowEnd > Date.now()) windowClosesAt = new Date(windowEnd);
     }
-
-    const currentState: FlickerStatus['current_state'] =
-      isMutual              ? 'mutual'
-      : myFlickeredToday    ? 'i_sent'
-      : partnerFlickeredToday ? 'they_sent'
-      : 'idle';
 
     const data: FlickerStatus = {
-      my_last_flicker_at: myLast ? new Date(myLast.sent_at) : null,
-      partner_last_flicker_at: partnerLast ? new Date(partnerLast.sent_at) : null,
-      is_mutual: isMutual,
+      my_last_flicker_at: p.my_last_flicker_at,
+      partner_last_flicker_at: p.partner_last_flicker_at,
+      is_mutual: state.is_mutual,
       window_closes_at: windowClosesAt,
-      current_state: currentState,
+      current_state: p.current_state,
     };
 
     this.statusCache.set(cacheKey, { data, cachedAt: Date.now() });
@@ -465,4 +488,39 @@ export class FlickerService {
       });
     }
   }
+}
+
+// ── Day boundary & perspective helpers ───────────────────────────────────────
+
+/**
+ * Start of the current IST day as an absolute instant.
+ *
+ * The daily cycle must be anchored to the users' timezone, not the server's.
+ * Render runs in UTC, so a plain local midnight put the server a day behind
+ * every client between 00:00 and 05:30 IST — the two users would then compute
+ * different daily states from identical data.
+ */
+export function istDayStart(now: Date = new Date()): Date {
+  return new Date(`${toISTDate(now)}T00:00:00+05:30`);
+}
+
+/** Projects the symmetric relationship state onto one user's point of view. */
+export function perspectiveOf(
+  state: RelationshipState,
+  userId: string,
+): {
+  my_last_flicker_at: Date | null;
+  partner_last_flicker_at: Date | null;
+  current_state: FlickerStatus['current_state'];
+} {
+  const isA = state.user_a_id === userId;
+  const mine = isA ? state.a_last_flicker_at : state.b_last_flicker_at;
+  const theirs = isA ? state.b_last_flicker_at : state.a_last_flicker_at;
+
+  return {
+    my_last_flicker_at: mine,
+    partner_last_flicker_at: theirs,
+    current_state:
+      mine && theirs ? 'mutual' : mine ? 'i_sent' : theirs ? 'they_sent' : 'idle',
+  };
 }
