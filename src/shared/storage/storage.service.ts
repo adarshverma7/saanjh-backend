@@ -177,6 +177,10 @@ export class StorageService {
     return `books/${orderId}/memory_book.pdf`;
   }
 
+  static exportKey(userId: string): string {
+    return `exports/${userId}/${Date.now()}.json`;
+  }
+
   static extractConnectionIdFromKey(key: string): string | null {
     const match = /^entries\/shared\/([^/]+)\//.exec(key);
     return match ? match[1] : null;

@@ -529,7 +529,11 @@ export class AuthService {
     await this.writeAuditLog(userId, 'account.delete_requested', 'user', userId);
 
     this.logger.log(`Account deletion requested for user ${userId}. Hard delete in 30 days.`);
-    // TODO Prompt 09: queue cleanup job { type: 'delete_user_data', userId, runAt: +30days }
+    // The purge itself is time-driven, not enqueued here: the daily
+    // ScheduledTasksService.hardDeleteScheduledAccounts sweep picks up any user
+    // whose deleted_at is older than 30 days and hard-deletes them (via the
+    // cleanup queue when Redis is present, inline otherwise). Logging back in
+    // before then clears deleted_at and cancels the deletion.
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────

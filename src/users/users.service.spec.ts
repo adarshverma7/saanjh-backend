@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { getDataSourceToken } from '@nestjs/typeorm';
 import { UsersService } from './users.service';
+import { DataExportService } from './data-export.service';
 import { StorageService } from '../shared/storage/storage.service';
 
 const USER_ID = 'user-uuid-001';
@@ -27,6 +28,7 @@ describe('UsersService', () => {
   let service: UsersService;
   let mockDb: { query: jest.Mock };
   let mockStorage: Partial<StorageService>;
+  let mockDataExport: { generateExport: jest.Mock };
 
   beforeEach(async () => {
     mockDb = { query: jest.fn() };
@@ -36,12 +38,14 @@ describe('UsersService', () => {
       objectExists: jest.fn().mockResolvedValue(true),
       deleteObject: jest.fn().mockResolvedValue(undefined),
     };
+    mockDataExport = { generateExport: jest.fn().mockResolvedValue(undefined) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         UsersService,
         { provide: getDataSourceToken(), useValue: mockDb },
         { provide: StorageService, useValue: mockStorage },
+        { provide: DataExportService, useValue: mockDataExport },
       ],
     }).compile();
 
@@ -280,6 +284,31 @@ describe('UsersService', () => {
       await service.updateSettings(USER_ID, { language: 'hi' });
       expect(mockDb.query).toHaveBeenCalledTimes(2); // users UPDATE + getSettings
       expect(mockDb.query.mock.calls[0][0]).toContain('UPDATE users');
+    });
+  });
+
+  // ── requestDataExport ──────────────────────────────────────────────────────
+
+  describe('requestDataExport', () => {
+    it('writes an audit log and kicks off background export generation', async () => {
+      mockDb.query.mockResolvedValue([]);
+
+      await service.requestDataExport(USER_ID);
+
+      // Audit log written for the request itself
+      const auditCall = mockDb.query.mock.calls.find(
+        (c) => typeof c[0] === 'string' && c[0].includes('audit_logs'),
+      );
+      expect(auditCall).toBeDefined();
+      // Background generation triggered (fire-and-forget) with the user id
+      expect(mockDataExport.generateExport).toHaveBeenCalledWith(USER_ID);
+    });
+
+    it('does not throw if background export generation rejects', async () => {
+      mockDb.query.mockResolvedValue([]);
+      mockDataExport.generateExport.mockRejectedValueOnce(new Error('storage down'));
+
+      await expect(service.requestDataExport(USER_ID)).resolves.toBeUndefined();
     });
   });
 

@@ -4,13 +4,15 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { InjectQueue } from '@nestjs/bull';
 import type { Queue } from 'bull';
+import { CleanupWorker } from './cleanup.worker';
 
 /**
  * Scheduled maintenance tasks — all run on IST-aligned schedules.
  *
  * Bull queue jobs are added for operations that need persistence/retry.
  * Without Redis, queue.add() calls are silently skipped — the cron still
- * fires, but jobs that require Bull fall back gracefully.
+ * fires, and work that must not be dropped (hard deletes) runs inline via
+ * the injected CleanupWorker instead.
  */
 @Injectable()
 export class ScheduledTasksService {
@@ -18,6 +20,7 @@ export class ScheduledTasksService {
 
   constructor(
     @InjectDataSource() private readonly db: DataSource,
+    private readonly cleanupWorker: CleanupWorker,
     @Optional() @InjectQueue('cleanup') private readonly cleanupQueue: Queue | null,
   ) {}
 
@@ -178,9 +181,17 @@ export class ScheduledTasksService {
               this.logger.warn(`Failed to queue account delete for ${user.id}`, err),
             );
         } else {
-          this.logger.warn(
-            `Redis not available — hard delete for ${user.id} will retry next cron run`,
-          );
+          // No Redis/Bull — run the hard delete inline. hardDeleteUser is
+          // idempotent and re-checks the 30-day grace period, so a failure
+          // here simply gets retried on the next daily run.
+          try {
+            await this.cleanupWorker.hardDeleteUser(user.id);
+          } catch (err: unknown) {
+            this.logger.error(
+              `Inline hard delete failed for ${user.id} — will retry next cron run`,
+              err,
+            );
+          }
         }
       }
     } catch (err: unknown) {

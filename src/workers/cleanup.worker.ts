@@ -61,8 +61,16 @@ export class CleanupWorker {
 
   @Process('delete_user_data')
   async deleteUserData(job: Job<DeleteUserDataPayload>): Promise<void> {
-    const { userId } = job.data;
+    await this.hardDeleteUser(job.data.userId);
+  }
 
+  /**
+   * Irreversibly purges a soft-deleted user's personal data. Idempotent and
+   * self-guarding: it re-checks the 30-day grace period, so it is safe to call
+   * both from the Bull queue (`@Process`) and inline from the daily cron sweep
+   * when Redis/Bull is not available.
+   */
+  async hardDeleteUser(userId: string): Promise<void> {
     this.logger.log(`Starting hard delete for user ${userId}`);
 
     // Verify user has been soft-deleted for at least 30 days

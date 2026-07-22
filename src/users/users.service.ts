@@ -8,6 +8,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import * as crypto from 'crypto';
 import { StorageService } from '../shared/storage/storage.service';
+import { DataExportService } from './data-export.service';
 import { returningRows } from '../shared/database/query-utils';
 import { maskPhone } from '../shared/helpers/phone.helper';
 import type { UpdateProfileDto } from './dto/update-profile.dto';
@@ -97,6 +98,7 @@ export class UsersService {
   constructor(
     @InjectDataSource() private readonly db: DataSource,
     private readonly storage: StorageService,
+    private readonly dataExport: DataExportService,
   ) {}
 
   // ── Profile ────────────────────────────────────────────────────────────────
@@ -439,10 +441,14 @@ export class UsersService {
   async requestDataExport(userId: string): Promise<void> {
     await this.writeAuditLog(userId, 'user.data_export_requested', 'user', userId);
 
-    // TODO (Prompt 09): queue Bull job → 'export_user_data' { userId }
-    // The job will compile all entries/transcriptions into a ZIP and
-    // send a download notification when ready.
-    this.logger.log(`Data export requested for user ${userId} — job queue pending Prompt 09`);
+    // Build the export in the background so the request returns immediately.
+    // The user is notified (in-app) with a download link when it's ready.
+    // No Redis needed — DataExportService runs inline and is self-contained.
+    void this.dataExport.generateExport(userId).catch((err: unknown) => {
+      this.logger.error(`Data export generation failed for user ${userId}`, err);
+    });
+
+    this.logger.log(`Data export requested for user ${userId} — generating in background`);
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
