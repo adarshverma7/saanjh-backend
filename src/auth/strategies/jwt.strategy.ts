@@ -15,6 +15,7 @@ export interface JwtPayload {
 
 export interface RequestUser {
   id: string;
+  sub: string; // alias of id — the JWT subject; used by @CurrentUser('sub')
   phone: string;
   name: string | null;
   is_onboarded: boolean;
@@ -62,6 +63,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
 
     return {
       ...rows[0],
+      sub: rows[0].id, // expose the user id under `sub` for @CurrentUser('sub')
       session_id: payload.session_id,
       device_id: payload.device_id,
     };
