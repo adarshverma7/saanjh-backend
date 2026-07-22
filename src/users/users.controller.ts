@@ -36,6 +36,14 @@ export class UsersController {
   // ── Onboarding ─────────────────────────────────────────────────────────────
 
   @ApiTags('Onboarding & Profile')
+  @ApiOperation({ summary: 'Get my profile', description: 'Returns the current user profile (name, masked phone, language, timezone, signed avatar_url). Flutter fetches this to render the Me / Profile screens.' })
+  @ApiResponse({ status: 200, description: 'Current user profile' })
+  @Get('users/me')
+  getMyProfile(@CurrentUser() user: RequestUser) {
+    return this.usersService.getProfile(user.id);
+  }
+
+  @ApiTags('Onboarding & Profile')
   @ApiOperation({ summary: 'Get onboarding status', description: 'Returns which onboarding step the user is on. Flutter checks this on app start.' })
   @ApiResponse({ status: 200, description: 'Onboarding step info' })
   @Get('onboarding/status')
