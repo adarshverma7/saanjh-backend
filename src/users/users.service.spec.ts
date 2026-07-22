@@ -236,6 +236,53 @@ describe('UsersService', () => {
     });
   });
 
+  // ── updateSettings ───────────────────────────────────────────────────────
+
+  describe('updateSettings', () => {
+    const settingsRow = [
+      {
+        language: 'en', timezone: 'Asia/Kolkata',
+        new_entry: false, flicker_received: true, streak_reminder: true,
+        streak_reminder_time: '20:00:00', occasion_reminders: true,
+        morning_ritual: true, morning_ritual_time: '08:00:00',
+        quiet_hours_start: '22:00:00', quiet_hours_end: '07:00:00',
+      },
+    ];
+
+    it('coalesces INSERT defaults so a partial PATCH for a user with no prefs row cannot insert NULL into NOT NULL columns', async () => {
+      // 1st query = the upsert, 2nd = getSettings SELECT
+      mockDb.query.mockResolvedValueOnce([]).mockResolvedValueOnce(settingsRow);
+
+      await service.updateSettings(USER_ID, { new_entry: false });
+
+      const upsertSql = mockDb.query.mock.calls[0][0] as string;
+      const upsertParams = mockDb.query.mock.calls[0][1] as unknown[];
+
+      // Regression (PATCH /settings 500): every NOT NULL column must fall back
+      // to a default in VALUES rather than be inserted as raw NULL.
+      expect(upsertSql).toContain('COALESCE($3, true)'); // flicker_received default
+      expect(upsertSql).toContain("COALESCE($5, '20:00:00'::time)"); // streak_reminder_time
+      // Unspecified fields are still passed as null — COALESCE handles them.
+      expect(upsertParams[1]).toBe(false); // $2 new_entry (provided)
+      expect(upsertParams[2]).toBeNull();  // $3 flicker_received (not provided)
+    });
+
+    it('skips the users UPDATE when only notification prefs are provided', async () => {
+      mockDb.query.mockResolvedValueOnce([]).mockResolvedValueOnce(settingsRow);
+      await service.updateSettings(USER_ID, { occasion_reminders: false });
+      // Only two queries run: the upsert and the getSettings read-back.
+      expect(mockDb.query).toHaveBeenCalledTimes(2);
+      expect(mockDb.query.mock.calls[0][0]).toContain('INSERT INTO notification_preferences');
+    });
+
+    it('updates the users table (not the prefs upsert) when only language changes', async () => {
+      mockDb.query.mockResolvedValueOnce([]).mockResolvedValueOnce(settingsRow);
+      await service.updateSettings(USER_ID, { language: 'hi' });
+      expect(mockDb.query).toHaveBeenCalledTimes(2); // users UPDATE + getSettings
+      expect(mockDb.query.mock.calls[0][0]).toContain('UPDATE users');
+    });
+  });
+
   // ── getFeatureFlags ────────────────────────────────────────────────────────
 
   describe('getFeatureFlags', () => {

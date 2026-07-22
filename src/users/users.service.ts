@@ -353,15 +353,31 @@ export class UsersService {
     const hasAnyPref = prefFields.some((f) => dto[f] !== undefined);
 
     if (hasAnyPref) {
-      // Build the UPSERT with only provided fields — use COALESCE to keep existing
-      // values for fields not present in this update
+      // Build the UPSERT with only provided fields.
+      //  - VALUES: coalesce nulls to the app defaults so a brand-new row
+      //    satisfies the NOT NULL columns (a partial PATCH for a user with no
+      //    notification_preferences row would otherwise insert NULL and 500).
+      //  - ON CONFLICT: coalesce against the *existing* row so an update leaves
+      //    fields not present in this PATCH untouched.
       await this.db.query(
         `INSERT INTO notification_preferences (
            user_id, new_entry, flicker_received, streak_reminder,
            streak_reminder_time, occasion_reminders, morning_ritual,
            morning_ritual_time, quiet_hours_start, quiet_hours_end, updated_at
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+         VALUES (
+           $1,
+           COALESCE($2, ${NOTIF_DEFAULTS.new_entry}),
+           COALESCE($3, ${NOTIF_DEFAULTS.flicker_received}),
+           COALESCE($4, ${NOTIF_DEFAULTS.streak_reminder}),
+           COALESCE($5, '${NOTIF_DEFAULTS.streak_reminder_time}'::time),
+           COALESCE($6, ${NOTIF_DEFAULTS.occasion_reminders}),
+           COALESCE($7, ${NOTIF_DEFAULTS.morning_ritual}),
+           COALESCE($8, '${NOTIF_DEFAULTS.morning_ritual_time}'::time),
+           COALESCE($9, '${NOTIF_DEFAULTS.quiet_hours_start}'::time),
+           COALESCE($10, '${NOTIF_DEFAULTS.quiet_hours_end}'::time),
+           NOW()
+         )
          ON CONFLICT (user_id) DO UPDATE SET
            new_entry            = COALESCE($2, notification_preferences.new_entry),
            flicker_received     = COALESCE($3, notification_preferences.flicker_received),
